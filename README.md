@@ -1,2 +1,2 @@
-# pendometro
+# Spendometro
 Spendometro, contabilità familiare condivisa
