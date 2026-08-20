@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<title>Spendometro</title>
+<link rel="manifest" href="./manifest.json" />
+<meta name="theme-color" content="#1F3A5F" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Spendometro" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<style>
+  html,body{margin:0;padding:0;background:#EDF0F3;-webkit-text-size-adjust:100%;height:100%;overflow:hidden;}
+  #app{display:flex;flex-direction:column;height:100dvh;max-height:100dvh;}
+  #scroll{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+  #barra{flex:0 0 auto;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#101820;overscroll-behavior-y:contain;}
+  *{-webkit-tap-highlight-color:transparent;}
+  input,select,textarea,button{font-family:inherit;}
+  input,select,textarea{font-size:16px;} /* evita lo zoom automatico su iOS */
+  #root{height:100%;}
+  .safe-bottom{padding-bottom:env(safe-area-inset-bottom);}
+  .safe-top{padding-top:env(safe-area-inset-top);}
+  /* il campo data su iOS non si restringe da solo */
+  input[type="date"]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;display:block;}
+</style>
+
+<!-- Firebase caricato come modulo; l'app lo attende tramite window.fbReady -->
+<script>window.fbReady = new Promise(function (res, rej) { window.__fbOk = res; window.__fbErr = rej; });</script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+           setPersistence, browserLocalPersistence, sendPasswordResetEmail }
+    from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
+  import { getFirestore,
+           collection, doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
+           onSnapshot, serverTimestamp, writeBatch, getCountFromServer }
+    from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBGckHKQkEw9u7cprBxECwc25a-5fpFi60",
+    authDomain: "spendometro-618c4.firebaseapp.com",
+    projectId: "spendometro-618c4",
+    storageBucket: "spendometro-618c4.firebasestorage.app",
+    messagingSenderId: "425135887976",
+    appId: "1:425135887976:web:729ee20ee2cbf7cdddcddd"
+  };
+
+  try {
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    await setPersistence(auth, browserLocalPersistence); // sessione permanente
+    // cache offline temporaneamente disattivata: causava blocchi in fase di scrittura.
+    // db "diretto", senza livello di persistenza locale.
+    const db = getFirestore(app);
+    window.__fbOk({ auth, db, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+      sendPasswordResetEmail, collection, doc, getDoc, setDoc, addDoc, updateDoc,
+      deleteDoc, onSnapshot, serverTimestamp, writeBatch, getCountFromServer });
+  } catch (e) { window.__fbErr(e); }
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+(function(){
+"use strict";
+const { useState, useMemo, useRef, useEffect } = React;
+
+/* ============================================================
+   SPENDOMETRO — dipartimento contabile del PMAS
+   ============================================================ */
+
+const UIDS = {
+  "trp3V14v3BUzDH1ewj2bUThNPs63": "pierangelo",
+  "e97ZYDqiSGTcQHhqostozxHWdCu2": "martina",
+};
+const USERS = { pierangelo: "Pierangelo", martina: "Martina" };
+const APP_VERSION = "2.2-no-offline";
+const BACKUP_EMAIL_DEFAULT = ""; // impostato dall'app, non nel codice pubblico
+const other = (u) => (u === "pierangelo" ? "martina" : "pierangelo");
+
+const T = {
+  bg:"#EDF0F3", surface:"#FFFFFF", ink:"#101820", muted:"#6B7684", line:"#DDE3E9",
+  brand:"#1F3A5F", brandSoft:"#E7EDF4", in:"#127A57", out:"#C0432C", warnSoft:"#FBF3DF",
+};
+const eur=(n)=>(n<0?"-":"")+"€"+Math.abs(n).toLocaleString("it-IT",{minimumFractionDigits:2,maximumFractionDigits:2});
+const eur0=(n)=>(n<0?"-":"")+"€"+Math.abs(n).toLocaleString("it-IT",{maximumFractionDigits:0});
+const round100=(n)=>Math.round(n/100)*100;
+const MESI=["gen","feb","mar","apr","mag","giu","lug","ago","set","ott","nov","dic"];
+const MESILUNGHI=["Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno","Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"];
+const today=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);};
+const slug=(s)=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
+
+/* ---------- tassonomia iniziale ---------- */
+const ICONS={"Casa": "🏠", "Spesa": "🛒", "Animali": "🐈", "Auto": "🚗", "Bicicletta": "🚲", "Banca": "🏦", "Tasse e contributi": "🧾", "Persona": "💇", "Musica": "🎸", "Sport": "🥋", "Lavoro": "💼", "Cibo fuori": "🍽️", "Salute": "💊", "Tempo libero": "🎭", "Elettronica e Informatica": "💻", "Viaggi": "✈️", "Documenti": "🪪", "Regali": "🎁", "Prestiti a terzi": "🤝", "Altro": "📦", "Stipendio": "💰", "Altre entrate": "🎉"};
+const TREE={"fisse": {"Casa": ["Mutuo", "Affitto", "Spese condominiali", "TARI", "IMU", "Luce", "Gas", "Acqua", "Internet e telefono", "Abbonamenti", "Assicurazione casa", "Pulizie"], "Spesa": ["Spesa alimentare"], "Animali": ["Cibo", "Lettiera"], "Auto": ["Bollo", "Assicurazione auto", "Revisione e tagliando", "Benzina", "Pedaggi", "Parcheggi", "Lavaggi", "Riparazioni", "Multe", "Olio, Lavavetri e AdBlue"], "Bicicletta": ["Riparazioni"], "Banca": ["Imposta di bollo", "Canone carta", "Piano Revolut Metal", "Commissioni"], "Tasse e contributi": ["Commercialista", "INPS e contributi", "Riscatto laurea", "Altre tasse"], "Persona": ["Barbiere", "Parrucchiere", "Assicurazione"], "Musica": ["Scuola"], "Sport": ["Judo", "Palestra"], "Lavoro": ["Associazioni", "Corsi", "Ordine professionale", "Assicurazione professionale", "Sito internet"]}, "variabili": {"Cibo fuori": ["Ristoranti", "Bar e caffe", "Aperitivi", "Delivery"], "Casa": ["Altro", "Manutenzione casa", "Cartoleria", "Arredamento", "Ristrutturazioni e lavori", "Elettrodomestici", "Giardino e piante", "Attrezzi e ferramenta", "Matrimonio"], "Persona": ["Cosmesi e cura", "Estetista", "Vestiti", "Scarpe", "Accessori", "Sigarette"], "Salute": ["Visite", "Farmaci", "Esami", "Dentista", "Occhiali e lenti", "Fisioterapia"], "Tempo libero": ["Cinema e film", "Libri e giornali", "Concerti ed eventi", "Giochi", "Sport e attrezzatura"], "Musica": ["Strumenti", "Libri", "Accessori", "Dischi"], "Elettronica e Informatica": ["Hardware", "Software e servizi"], "Animali": ["Veterinario", "Accessori animali"], "Viaggi": ["Voli", "Alloggio", "Trasporti", "Spese in viaggio", "Visti e documenti"], "Lavoro": ["Conferenze", "Trasferta", "Materiali e attrezzi", "Abbonamenti", "Altro"], "Auto": ["Accessori"], "Documenti": ["Passaporto", "Carta identita", "Patente", "Altro"], "Regali": [], "Prestiti a terzi": [], "Altro": []}, "stipendio": {"Stipendio": []}, "altre_entrate": {"Altre entrate": ["Regali", "Prestazioni occasionali", "Vendite", "Rimborsi", "Restituzione prestiti"]}};
+const TREE5={"fisse|Casa|Abbonamenti": ["Netflix", "Amazon Prime", "Spotify", "NowTV", "iCloud", "PEC", "Altri abbonamenti"]};
+const L2LABEL={fisse:"Fisse",variabili:"Variabili",stipendio:"Stipendio",altre_entrate:"Altre entrate"};
+
+function buildCats(){
+  const groups=[],leaves=[],subs=[];
+  Object.entries(TREE).forEach(([l2,gs])=>{
+    const l1=(l2==="fisse"||l2==="variabili")?"spese":"entrate";
+    Object.entries(gs).forEach(([g,ls])=>{
+      const gid=l2+"."+slug(g);
+      groups.push({id:gid,l1,l2,name:g,icon:ICONS[g]||"📌",archived:false});
+      ls.forEach((l)=>{
+        const lid=gid+"."+slug(l);
+        leaves.push({id:lid,groupId:gid,name:l,archived:false});
+        (TREE5[l2+"|"+g+"|"+l]||[]).forEach((x)=>
+          subs.push({id:lid+"."+slug(x),leafId:lid,name:x,archived:false}));
+      });
+    });
+  });
+  return {groups,leaves,subs};
+}
+
+/* ---------- emoji ---------- */
+const EMOJIRULES=[
+ [["mutuo"],"🏦"],[["condomin"],"🏢"],[["affitt"],"🔑"],[["casa","abit","domestic"],"🏠"],
+ [["tari","rifiut","immondiz","spazzat"],"🗑️"],[["luce","elettric","energ","corrent"],"⚡"],
+ [["gas","metano","caldai","riscald"],"🔥"],[["acqua","idric","acquedott"],"💧"],
+ [["telefon","cellular","sim","iliad","tim","vodafone"],"📱"],[["internet","wifi","fibra","adsl"],"📶"],
+ [["netflix","streaming","abbonament","disney","prime"],"📺"],[["pec","domin","hosting","aruba"],"🌐"],
+ [["pulizi","colf"],"🧽"],[["manutenz","ripar","idraul","elettricist"],"🔧"],
+ [["giardin","pianta","orto","fiori"],"🪴"],[["arred","mobil","ikea","divano"],"🛋️"],
+ [["elettrodom","lavatric","frigo","forno"],"🔌"],[["allarm","sorveglianz","sicurezz"],"🚨"],
+ [["spesa","aliment","super","market","drogher"],"🛒"],[["macell","carne"],"🥩"],
+ [["pane","fornai","panific"],"🥖"],[["frutta","verdur","ortofrut"],"🥕"],
+ [["ristor","cena","pranzo","trattor","osteri","pizzer"],"🍽️"],[["sushi","giappones"],"🍣"],
+ [["bar","caff","colazion"],"☕"],[["aperit","drink","spritz","cocktail","birra"],"🍸"],
+ [["vino","cantin","enotec"],"🍷"],[["gelat","dolc","pasticc"],"🍨"],[["delivery","asporto","glovo","deliveroo"],"🛵"],
+ [["benzin","carburant","diesel","gasolio","rifornim"],"⛽"],[["auto","macchin","vettur"],"🚗"],
+ [["bollo"],"🧾"],[["assicur"],"🛡️"],[["revision","tagliand","mecca","gomm"],"🔩"],
+ [["pedagg","autostrad","telepass"],"🛣️"],[["parchegg","sosta"],"🅿️"],[["lavagg","autolav"],"🧼"],
+ [["multa","sanzion","contravv"],"🚔"],[["bici","ciclo","bicicl"],"🚲"],[["moto","scooter"],"🏍️"],
+ [["treno","ferrov","trenital","italo"],"🚆"],[["bus","autobus","tram","metro","trasport"],"🚌"],
+ [["taxi","uber","ncc"],"🚕"],[["traghett","nave","barca"],"⛴️"],
+ [["barbier","parruc","capell"],"💇"],[["estetist","manicur","unghi","cera"],"💅"],
+ [["cosmes","crema","profum","trucc","makeup"],"🧴"],[["abbigl","vestit","maglion","pantalon"],"👕"],
+ [["scarp","sneaker","stival"],"👟"],[["accessor","borsa","occhial","orolog"],"👜"],
+ [["gioiell","anell","collan"],"💍"],[["sigarett","tabacc","fum","svapo"],"🚬"],
+ [["dentist","odontoiat","ortodon"],"🦷"],[["farmac","medicin","pastigl"],"💊"],
+ [["medic","visit","dottor","specialist"],"🩺"],[["esam","analis","sangue","radiograf"],"🔬"],
+ [["ottic","lenti"],"👓"],[["fisioterap","osteopat","massagg"],"💆"],[["psicolog","terapi"],"🧠"],
+ [["palestr","fitness","gym","crossfit"],"🏋️"],[["judo","karate","marzial","boxe"],"🥋"],
+ [["nuoto","piscin"],"🏊"],[["corsa","running","maraton"],"🏃"],[["sci","montagn","trekking"],"⛷️"],
+ [["calcio","partit","stadio"],"⚽"],[["tennis","padel"],"🎾"],[["sport","attrezz"],"🏅"],
+ [["music","chitarr","strument","dischi","vinil"],"🎸"],[["piano","tastier","artemusic"],"🎹"],
+ [["concert","live","festival"],"🎤"],[["cinema","film","teatr","spettacol"],"🎬"],
+ [["libr","lett","edicol","giornal","riviste"],"📚"],[["museo","mostr","cultur","arte"],"🖼️"],
+ [["gioch","videogioc","console","playstation"],"🎮"],[["fotograf","fotocamer"],"📷"],
+ [["corso","istruzion","scuola","universit","master"],"🎓"],[["svago","hobby","tempo liber"],"🎭"],
+ [["comput","laptop","mac"],"💻"],[["software","app","licenz","icloud","cloud"],"💾"],
+ [["informat","tech","hardware","component"],"🖥️"],[["stampant","toner","cartucc"],"🖨️"],
+ [["gatt","felin"],"🐈"],[["can","cucciol"],"🐕"],[["veterin"],"🩹"],[["animal","croccant","pet"],"🐾"],
+ [["vol","aere","ryanair","aeroport"],"✈️"],[["hotel","alberg","bnb","alloggi","ostell"],"🏨"],
+ [["viagg","vacanz","ferie","gita"],"🧳"],[["mare","spiagg","ombrellon"],"🏖️"],[["campegg","tenda"],"⛺"],
+ [["banca","conto","bonific","commission"],"🏦"],[["cart","bancomat","debito","credito"],"💳"],
+ [["tass","commercial","fisc","f24","irpef","inps"],"🧾"],[["investiment","etf","titol","borsa"],"📈"],
+ [["prestit","finanziam","rata"],"📉"],[["contant","prelievo","atm"],"💵"],
+ [["stipend","salari","paga","busta"],"💰"],[["tredices","quattordices","bonus","premio"],"🎯"],
+ [["rimbors","restitu","storno"],"↩️"],[["vendit","usato","subito","vinted"],"🏷️"],
+ [["regal","compleann","natal","nozze"],"🎁"],[["entrat","guadagn","incass"],"🎉"],
+ [["lavor","ufficio","profession","trasfert"],"💼"],[["material","cancell","forniture"],"📎"],
+ [["congress","conferenz","convegn"],"🎙️"],[["spedizion","post","corrier","amazon"],"📦"],
+ [["donazion","beneficenz","chiesa"],"❤️"],[["figl","bimb","bamb","asilo","baby"],"🧸"],
+ [["matrimon","sposi","cerimoni"],"💒"],[["funeral","lutt"],"🕯️"],[["servizi","vari","altro","extra"],"📌"],
+];
+const autoEmoji=(n)=>{const s=n.toLowerCase();for(const [ks,e] of EMOJIRULES) if(ks.some(k=>s.includes(k))) return e;return "📌";};
+const PALETTE="🏠🏢🔑🗑️⚡🔥💧📱📶📺🌐🧽🔧🪴🛋️🔌🚨🛒🥩🥖🥕🍽️🍣☕🍸🍷🍨🛵⛽🚗🧾🛡️🔩🛣️🅿️🧼🚔🚲🏍️🚆🚌🚕⛴️💇💅🧴👕👟👜💍🚬🦷💊🩺🔬👓💆🧠🏋️🥋🏊🏃⛷️⚽🎾🏅🎸🎹🎤🎬📚🖼️🎮📷🎓🎭💻💾🖥️🖨️🐈🐕🩹🐾✈️🏨🧳🏖️⛺🏦💳📈📉💵💰🎯↩️🏷️🎁🎉💼📎🎙️📦❤️🧸💒🕯️📌".match(/\p{Extended_Pictographic}\uFE0F?/gu);
+
+/* ---------- split ---------- */
+function shareFor(t,user){
+  if(!t.shared) return t.createdBy===user?t.amount:0;
+  const isC=user===t.createdBy,p=(t.splitPercent||50)/100;
+  switch(t.splitMode){
+    case "paid_by_me_split": case "paid_by_other_split": return t.amount*(isC?p:1-p);
+    case "i_owe_full": return isC?t.amount:0;
+    case "other_owes_full": return isC?0:t.amount;
+    default: return 0;
+  }
+}
+function deltaFor(t){
+  if(!t.shared) return 0;
+  const p=(t.splitPercent||50)/100,sign=t.type==="expense"?1:-1;
+  switch(t.splitMode){
+    case "paid_by_me_split": return sign*t.amount*(1-p);
+    case "paid_by_other_split": return -sign*t.amount*p;
+    case "i_owe_full": return -sign*t.amount;
+    case "other_owes_full": return sign*t.amount;
+    default: return 0;
+  }
+}
+const SPLITLABEL=(m,o)=>({paid_by_me_split:"Pagato da me e diviso",
+  paid_by_other_split:"Pagato da "+USERS[o]+" e diviso",
+  i_owe_full:"Devo a "+USERS[o]+" l'intera cifra",
+  other_owes_full:USERS[o]+" mi deve l'intera cifra"}[m]);
+
+/* ---------- calcolatrice ---------- */
+function calc(expr){
+  const tk=String(expr).replace(/,/g,".").match(/(\d+\.?\d*|[+\-*/()])/g);
+  if(!tk) return NaN;
+  let i=0; const peek=()=>tk[i],eat=()=>tk[i++];
+  function E(){let v=Tm();while(peek()==="+"||peek()==="-"){const o=eat(),r=Tm();v=o==="+"?v+r:v-r;}return v;}
+  function Tm(){let v=F();while(peek()==="*"||peek()==="/"){const o=eat(),r=F();v=o==="*"?v*r:v/r;}return v;}
+  function F(){ if(peek()==="("){eat();const v=E();if(peek()===")")eat();return v;}
+    if(peek()==="-"){eat();return -F();}
+    const n=parseFloat(eat());return isNaN(n)?0:n;}
+  const r=E(); return i<tk.length?NaN:r;
+}
+
+/* ---------- UI atomi ---------- */
+const Card=({children,style})=><div style={{background:T.surface,borderRadius:14,border:"1px solid "+T.line,padding:14,...style}}>{children}</div>;
+const Btn=({children,onClick,kind="primary",disabled,style})=>{
+  const s={primary:{background:T.brand,color:"#fff",border:"none"},
+           ghost:{background:T.surface,color:T.ink,border:"1px solid "+T.line},
+           danger:{background:"#fff",color:T.out,border:"1px solid "+T.out}}[kind];
+  return <button onClick={onClick} disabled={disabled} style={{...s,opacity:disabled?0.4:1,padding:"12px 14px",borderRadius:11,fontSize:15,fontWeight:600,width:"100%",...style}}>{children}</button>;
+};
+const Row=({l,r})=><div style={{display:"flex",justifyContent:"space-between",padding:"7px 0",fontSize:14}}><span>{l}</span><b style={{fontVariantNumeric:"tabular-nums"}}>{r}</b></div>;
+const H=({children})=><div style={{fontSize:11,letterSpacing:1.2,textTransform:"uppercase",color:T.muted,fontWeight:700,margin:"16px 0 7px"}}>{children}</div>;
+const sel2={width:"100%",padding:"11px 12px",borderRadius:10,border:"1px solid "+T.line,fontSize:16,background:"#fff",color:T.ink,boxSizing:"border-box"};
+
+class Guard extends React.Component{
+  constructor(p){super(p);this.state={err:null};}
+  static getDerivedStateFromError(err){return {err};}
+  render(){ if(!this.state.err) return this.props.children;
+    return <div style={{padding:20}}>
+      <div style={{fontSize:17,fontWeight:800,marginBottom:8}}>Qualcosa si è rotto</div>
+      <div style={{fontSize:13.5,color:T.muted,marginBottom:12}}>I dati sono al sicuro su Firestore. Riapri l'app; se si ripete, segnalami il messaggio.</div>
+      <pre style={{fontSize:11,background:"#fff",padding:10,borderRadius:9,overflowX:"auto"}}>{String(this.state.err)}</pre>
+      <Btn onClick={()=>this.setState({err:null})}>Torna all'app</Btn>
+    </div>;}
+}
+
+/* ---------- condivisione file ---------- */
+function scaricaFile(blob,filename){
+  try{
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob); a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    return true;
+  }catch(e){ return false; }
+}
+function shareOrDownload(blob,filename,title,onFallback){
+  let file=null;
+  try{ file=new File([blob],filename,{type:blob.type}); }catch(e){}
+  const puoCondividere = file && navigator.canShare && navigator.canShare({files:[file]}) && navigator.share;
+  if(puoCondividere){
+    navigator.share({files:[file],title,text:title}).catch((err)=>{
+      // annullato dall'utente: non si riprova. Qualsiasi altro errore: si scarica.
+      if(err && err.name==="AbortError") return;
+      if(!scaricaFile(blob,filename) && onFallback) blob.text().then(onFallback).catch(()=>{});
+    });
+    return "share";
+  }
+  if(scaricaFile(blob,filename)) return "download";
+  if(onFallback) blob.text().then(onFallback).catch(()=>{});
+  return "fallback";
+}
+
+/* ============================================================
+   ROOT
+   ============================================================ */
+function App(){
+  const [fb,setFb]=useState(null);
+  const [fbErr,setFbErr]=useState(null);
+  const [authUser,setAuthUser]=useState(undefined); // undefined = in verifica
+  const [ready,setReady]=useState(false);
+
+  const [tx,setTx]=useState([]);
+  const [settlements,setSettlements]=useState([]);
+  const [balances,setBalances]=useState([]);
+  const [cats,setCats]=useState(null);
+  const [config,setConfig]=useState(null);
+  const [photo,setPhoto]=useState(null);
+  const [online,setOnline]=useState(navigator.onLine);
+
+  const [view,setView]=useState("home");
+  const [editing,setEditing]=useState(null);
+  const [toast,setToast]=useState(null);
+  const [backupText,setBackupText]=useState(null);
+  const [simLock,setSimLock]=useState(false);
+  const say=(m)=>{setToast(m);setTimeout(()=>setToast(null),2800);};
+  const [erroreGlobale,setErroreGlobale]=useState(null);
+  useEffect(()=>{
+    const onErr=(e)=>{ const msg=String((e.error&&e.error.message)||e.message||e);
+      if(/firestore|assertion/i.test(msg)) setErroreGlobale(msg); };
+    const onRej=(e)=>{ const msg=String((e.reason&&e.reason.message)||e.reason||"");
+      if(/firestore|assertion/i.test(msg)) setErroreGlobale(msg); };
+    window.addEventListener("error",onErr);
+    window.addEventListener("unhandledrejection",onRej);
+    return ()=>{ window.removeEventListener("error",onErr); window.removeEventListener("unhandledrejection",onRej); };
+  },[]);
+
+  useEffect(()=>{ window.fbReady.then(setFb).catch(e=>setFbErr(e)); },[]);
+  useEffect(()=>{ const on=()=>setOnline(true),off=()=>setOnline(false);
+    window.addEventListener("online",on); window.addEventListener("offline",off);
+    return ()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};},[]);
+  useEffect(()=>{ if(!fb) return;
+    return fb.onAuthStateChanged(fb.auth,(u)=>setAuthUser(u||null));
+  },[fb]);
+
+  const user = authUser ? UIDS[authUser.uid] : null;
+
+  // sottoscrizioni realtime
+  const unsubTxRef=useRef(null);
+  const attachTx=()=>{
+    if(!fb||!user) return;
+    if(unsubTxRef.current) return;      // gia' collegata
+    unsubTxRef.current=fb.onSnapshot(fb.collection(fb.db,"transactions"),(s)=>{
+      setTx(s.docs.map(d=>({id:d.id,...d.data()})));setReady(true);});
+  };
+  const detachTx=()=>{ if(unsubTxRef.current){ unsubTxRef.current(); unsubTxRef.current=null; } };
+
+  useEffect(()=>{
+    if(!fb||!user) return;
+    const db=fb.db;
+    const un=[];
+    attachTx();
+    un.push(fb.onSnapshot(fb.collection(db,"settlements"),(s)=>
+      setSettlements(s.docs.map(d=>({id:d.id,...d.data()})))));
+    un.push(fb.onSnapshot(fb.collection(db,"balances"),(s)=>
+      setBalances(s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>a.date.localeCompare(b.date)))));
+    un.push(fb.onSnapshot(fb.doc(db,"meta","categories"),async(d)=>{
+      if(d.exists()){ const c=d.data(); setCats({groups:c.groups||[],leaves:c.leaves||[],subs:c.subs||[]}); }
+      else { const c=buildCats(); setCats(c); fb.setDoc(fb.doc(db,"meta","categories"),c).catch(()=>{}); }
+    }));
+    un.push(fb.onSnapshot(fb.doc(db,"meta","photo"),(d)=>{
+      setPhoto(d.exists()?(d.data().dataUrl||null):null);}));
+    un.push(fb.onSnapshot(fb.doc(db,"meta","config"),async(d)=>{
+      if(d.exists()) setConfig(d.data());
+      else { const c={backupEmail:BACKUP_EMAIL_DEFAULT,lastBackup:"",lastBackupBy:""};
+        setConfig(c); fb.setDoc(fb.doc(db,"meta","config"),c).catch(()=>{}); }
+    }));
+    return ()=>{ detachTx(); un.forEach(f=>f&&f()); };
+  },[fb,user]);
+
+  const leafById=useMemo(()=>cats?Object.fromEntries(cats.leaves.map(l=>[l.id,l])):{},[cats]);
+  const groupById=useMemo(()=>cats?Object.fromEntries(cats.groups.map(g=>[g.id,g])):{},[cats]);
+  const subById=useMemo(()=>cats&&cats.subs?Object.fromEntries(cats.subs.map(x=>[x.id,x])):{},[cats]);
+  const meta=(t)=>{const lf=t.leafId?leafById[t.leafId]:null;
+    const g=groupById[t.groupId]||(lf&&groupById[lf.groupId]);
+    const sb=t.subId?subById[t.subId]:null;
+    return {leaf:lf,group:g,sub:sb};};
+
+  const balance=useMemo(()=>{
+    let b=0;
+    tx.forEach(t=>{const d=deltaFor(t); b+= t.createdBy==="pierangelo"?d:-d;});
+    settlements.forEach(s=>{ b += s.to==="pierangelo" ? -s.amount : s.amount; });
+    return b;
+  },[tx,settlements]);
+  const myBalance = user==="pierangelo" ? balance : -balance;
+  const etichette=useMemo(()=>[...new Set(tx.map(t=>(t.etichetta||"").trim()).filter(Boolean))].sort(),[tx]);
+
+  const mesecorrente=today().slice(0,8)+"01";
+  const locked = user==="pierangelo" && config &&
+    (simLock || !config.lastBackup || config.lastBackup < mesecorrente);
+
+  /* --- scritture --- */
+  // Offline le promesse di Firestore non si risolvono finche non risponde il server:
+  // si naviga subito, il dato e gia nella cache locale.
+  const saveTx=(t)=>{
+    const db=fb.db;
+    try{
+      if(t.id){ const {id,pending,...rest}=t;
+        const prev=tx.find(x=>x.id===id)||{};
+        fb.updateDoc(fb.doc(db,"transactions",id),
+          {...rest, editedBy: prev.createdBy!==user?user:(prev.editedBy||null), editedAt:fb.serverTimestamp()})
+          .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+        say("Movimento aggiornato");
+      } else {
+        const {id,pending,...rest}=t;
+        fb.addDoc(fb.collection(db,"transactions"),
+          {...rest,createdBy:user,editedBy:null,source:"manual",createdAt:fb.serverTimestamp()})
+          .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+        say("Movimento registrato");
+      }
+      setEditing(null);setView("home");
+    }catch(e){say("Errore nel salvataggio: "+(e.code||e.message));}
+  };
+  const delTx=(id)=>{
+    try{ fb.deleteDoc(fb.doc(fb.db,"transactions",id))
+        .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+      setEditing(null);setView("home");say("Movimento eliminato");
+    }catch(e){say("Errore: "+(e.code||e.message));}
+  };
+  const saveCats=(c)=>{ setCats(c);
+    try{ fb.setDoc(fb.doc(fb.db,"meta","categories"),c)
+      .catch(e=>say("Sincronizzazione categorie non riuscita: "+(e.code||e.message)));
+    }catch(e){say("Errore categorie: "+(e.code||e.message));} };
+
+  const doBackup=async()=>{
+    const n=tx.length;
+    const fn="SPENDOMETRO_backup_"+today()+"_v1_"+n+"tx.json";
+    const senzaPending=(arr)=>arr.map(({pending,...r})=>r); // pending e stato UI, non un dato
+    const payload={schema:1,generato:new Date().toISOString(),da:user,
+      transactions:senzaPending(tx),settlements:senzaPending(settlements),
+      balances:senzaPending(balances),categories:cats,config};
+    const blob=new Blob([JSON.stringify(payload,null,1)],{type:"application/json"});
+    const testo=fn.replace(".json","")+"\n\nBackup Spendometro del "+today()+"\nMovimenti: "+n+
+      "\nPer ritrovarlo cerca in Gmail: SPENDOMETRO_backup";
+    const how=shareOrDownload(blob,fn,testo,(txt)=>setBackupText({fn,txt}));
+    try{ fb.updateDoc(fb.doc(fb.db,"meta","config"),{lastBackup:today(),lastBackupBy:user}).catch(()=>{}); }catch(e){}
+    setSimLock(false);
+    say(how==="fallback"?"Backup mostrato a schermo":(how==="download"?"Backup scaricato: "+fn:"Backup pronto"+(config?.backupEmail?": invialo a "+config.backupEmail:"")));
+  };
+
+  if(fbErr) return <div style={{padding:24}}><b>Firebase non raggiungibile.</b><pre style={{fontSize:11}}>{String(fbErr)}</pre></div>;
+  if(!fb||authUser===undefined) return <Splash msg="Avvio…" />;
+  if(!authUser) return <Login fb={fb} />;
+  if(!UIDS[authUser.uid]) return <Splash msg="Account non autorizzato." action={()=>fb.signOut(fb.auth)} />;
+  if(!ready||!cats||!config) return <Splash msg="Carico i dati…" />;
+
+  return (
+    <Guard>
+    <div id="app" style={{background:T.bg}}>
+      <div id="scroll">
+      <div style={{maxWidth:480,margin:"0 auto",paddingBottom:view==="add"?24:16}}>
+        <div style={{background:T.brand,position:"relative",overflow:"hidden"}}>
+          {photo && <img src={photo} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",opacity:0.9}} />}
+          {photo && <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(16,24,32,.55) 0%,rgba(16,24,32,.15) 45%,rgba(16,24,32,.65) 100%)"}} />}
+          <div style={{position:"relative",paddingTop:"calc(14px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:14,minHeight:photo?128:0,display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:photo?"0 1px 6px rgba(0,0,0,.5)":"none"}}>Spendometro</div>
+              <button onClick={()=>fb.signOut(fb.auth)} style={{background:photo?"rgba(16,24,32,.55)":"#33547C",color:"#fff",border:"none",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600,backdropFilter:"blur(4px)"}}>{USERS[user]}</button>
+            </div>
+          </div>
+        </div>
+
+        {locked ? <BackupLock onBackup={doBackup} config={config} /> : (
+          <div style={{padding:"0 14px"}}>
+            {view==="home" && <Home {...{tx,user,meta,myBalance,fb,settlements,say,setEditing,setView,etichette}} />}
+            {view==="add" && <AddEdit {...{cats,user,initial:editing,etichette,onSave:saveTx,onDelete:delTx,onCancel:()=>{setEditing(null);setView("home");}}} />}
+            {view==="report" && <Report {...{tx,user,meta,balances,fb,say}} />}
+            {view==="cats" && <CatsView {...{cats,saveCats,tx,say}} />}
+            {view==="data" && <SchermataDati {...{tx,cats,meta,user,fb,doBackup,config,photo,setSimLock,say,detachTx,attachTx}} />}
+          </div>
+        )}
+
+        {erroreGlobale && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.55)",zIndex:97,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+            <Card style={{maxWidth:380}}>
+              <div style={{fontSize:16,fontWeight:800,marginBottom:8}}>Firestore ha segnalato un problema interno</div>
+              <div style={{fontSize:13,color:T.muted,lineHeight:1.5,marginBottom:10}}>Nessun dato e' andato perso: e' un errore del canale di comunicazione, non del database. Ricarica la pagina.</div>
+              <pre style={{fontSize:10,background:T.bg,padding:8,borderRadius:8,overflowX:"auto",maxHeight:120}}>{erroreGlobale}</pre>
+              <div style={{marginTop:10}}><Btn onClick={()=>location.reload()}>Ricarica l'app</Btn></div>
+            </Card>
+          </div>
+        )}
+        {toast && <div style={{position:"fixed",bottom:100,left:"50%",transform:"translateX(-50%)",background:T.ink,color:"#fff",padding:"10px 16px",borderRadius:10,fontSize:13,zIndex:99,maxWidth:360,textAlign:"center"}}>{toast}</div>}
+        {backupText && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:95,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+            <Card style={{maxWidth:420,width:"100%"}}>
+              <div style={{fontSize:14,fontWeight:700}}>{backupText.fn}</div>
+              <div style={{fontSize:12,color:T.muted,margin:"4px 0 8px"}}>Copia il testo e salvalo, oppure riprova dal telefono.</div>
+              <textarea readOnly value={backupText.txt} style={{width:"100%",height:160,fontSize:10,fontFamily:"monospace",borderRadius:8,border:"1px solid "+T.line,padding:8,boxSizing:"border-box"}} />
+              <div style={{marginTop:8}}><Btn onClick={()=>setBackupText(null)}>Chiudi</Btn></div>
+            </Card>
+          </div>
+        )}
+      </div>
+      </div>
+      {!locked && view!=="add" && (
+          <div id="barra" className="safe-bottom" style={{position:"relative",background:T.surface,borderTop:"1px solid "+T.line,display:"flex",maxWidth:480,margin:"0 auto",width:"100%",boxSizing:"border-box"}}>
+            {[["home","Spese"],["report","Report"],["cats","Categorie"],["data","Dati"]].map(([k,l])=>(
+              <button key={k} onClick={()=>setView(k)} style={{flex:1,background:"none",border:"none",padding:"13px 4px 18px",fontSize:12,fontWeight:700,color:view===k?T.brand:T.muted}}>{l}</button>
+            ))}
+            <button onClick={()=>{setEditing(null);setView("add");}} style={{position:"absolute",right:12,top:-46,width:56,height:56,borderRadius:28,background:T.brand,color:"#fff",border:"3px solid "+T.bg,fontSize:30,lineHeight:1,padding:0,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 3px 12px rgba(0,0,0,.22)"}}><span style={{display:"block",marginTop:-2}}>+</span></button>
+          </div>
+        )}
+
+        {!online && <div style={{position:"fixed",top:0,left:0,right:0,background:"#B8860B",color:"#fff",fontSize:12,fontWeight:700,textAlign:"center",paddingTop:"calc(5px + env(safe-area-inset-top))",paddingBottom:5,paddingLeft:8,paddingRight:8,zIndex:98,boxSizing:"border-box"}}>Offline · le modifiche si sincronizzano al ritorno della rete</div>}
+    </div>
+    </Guard>
+  );
+}
+
+const Splash=({msg,action})=>(
+  <div style={{background:T.brand,minHeight:"100vh",display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",color:"#fff",paddingTop:"calc(24px + env(safe-area-inset-top))",paddingLeft:24,paddingRight:24,paddingBottom:24,boxSizing:"border-box"}}>
+    <div style={{fontSize:34,fontWeight:800,letterSpacing:-1.2}}>Spendometro</div>
+    <div style={{color:"#9DB4CE",fontSize:14,marginTop:8}}>{msg}</div>
+    {action && <div style={{marginTop:18,width:200}}><Btn kind="ghost" onClick={action}>Esci</Btn></div>}
+  </div>
+);
+
+/* ---------- Login ---------- */
+function Login({fb}){
+  const [email,setEmail]=useState(""),[pw,setPw]=useState("");
+  const [err,setErr]=useState(""),[busy,setBusy]=useState(false);
+  const go=async()=>{
+    setBusy(true);setErr("");
+    try{ await fb.signInWithEmailAndPassword(fb.auth,email.trim(),pw); }
+    catch(e){ setErr(e.code==="auth/invalid-credential"?"Email o password non corretti":e.code); }
+    setBusy(false);
+  };
+  return (
+    <div style={{background:T.brand,minHeight:"100vh",display:"flex",flexDirection:"column",justifyContent:"center",paddingTop:"calc(26px + env(safe-area-inset-top))",paddingLeft:26,paddingRight:26,paddingBottom:26,boxSizing:"border-box"}}>
+      <div style={{color:"#fff",fontSize:38,fontWeight:800,letterSpacing:-1.4}}>Spendometro</div>
+      <div style={{color:"#9DB4CE",fontSize:14,marginBottom:28}}>Dipartimento contabile del PMAS</div>
+      <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} type="email" autoComplete="username" style={{...sel2,marginBottom:9}} />
+      <input placeholder="Password" value={pw} onChange={e=>setPw(e.target.value)} type="password" autoComplete="current-password"
+        onKeyDown={e=>e.key==="Enter"&&go()} style={{...sel2,marginBottom:12}} />
+      {err && <div style={{color:"#FFC9C0",fontSize:13,marginBottom:10}}>{err}</div>}
+      <Btn onClick={go} disabled={busy||!email||!pw} style={{background:"#fff",color:T.brand}}>{busy?"Accesso…":"Entra"}</Btn>
+      <button onClick={async()=>{ if(!email) return setErr("Scrivi prima l'email");
+          try{ await fb.sendPasswordResetEmail(fb.auth,email.trim()); setErr("Email di reimpostazione inviata"); }catch(e){setErr(e.code);} }}
+        style={{background:"none",border:"none",color:"#9DB4CE",fontSize:12.5,marginTop:16}}>Password dimenticata</button>
+      <div style={{color:"#7B96B4",fontSize:11.5,marginTop:18,lineHeight:1.5}}>L'accesso si fa una volta sola. Aggiungi l'app alla schermata Home per mantenere la sessione.</div>
+    </div>
+  );
+}
+
+/* ---------- Blocco backup ---------- */
+function BackupLock({onBackup,config}){
+  return (
+    <div style={{padding:20,paddingTop:"calc(20px + env(safe-area-inset-top))"}}>
+      <Card style={{background:T.warnSoft,borderColor:"#E8D9A8"}}>
+        <div style={{fontSize:17,fontWeight:800,marginBottom:6}}>Backup del mese richiesto</div>
+        <div style={{fontSize:13.5,lineHeight:1.55,color:"#5C4A16"}}>
+          L'app resta bloccata finché non salvi il backup. Ultimo backup: <b>{config.lastBackup||"mai"}</b>.
+          Premi il pulsante, scegli Mail e invia a <b>{config.backupEmail||"(imposta l'indirizzo in Dati)"}</b>.
+        </div>
+        <div style={{marginTop:14}}><Btn onClick={onBackup}>Backup database</Btn></div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------- Home ---------- */
+function Home({tx,user,meta,myBalance,fb,settlements,say,setEditing,setView,etichette}){
+  const [scale,setScale]=useState("mese");
+  const [confirm,setConfirm]=useState(false);
+  const [sel,setSel]=useState(null);          // null = modalita normale, Set = selezione
+  const [nuovaEt,setNuovaEt]=useState("");
+  const [busyEt,setBusyEt]=useState(false);
+  const scroller=useRef(null);
+  const mine=useMemo(()=>tx.map(t=>({t,q:shareFor(t,user)})).filter(x=>x.q>0.0001),[tx,user]);
+  const key=(d)=>scale==="mese"?d.slice(0,7):d.slice(0,4);
+  const buckets=useMemo(()=>{
+    const m={};
+    mine.forEach(({t,q})=>{const k=key(t.date);m[k]=m[k]||{k,in:0,out:0};
+      if(t.type==="income")m[k].in+=q;else m[k].out+=q;});
+    return Object.values(m).sort((a,b)=>a.k.localeCompare(b.k));
+  },[mine,scale]);
+  const cur=buckets[buckets.length-1]||{k:today().slice(0,7),in:0,out:0};
+  const label=(k)=>scale==="mese"?MESI[+k.slice(5,7)-1]+" "+k.slice(2,4):k;
+  const recent=useMemo(()=>[...mine].sort((a,b)=>b.t.date.localeCompare(a.t.date)).slice(0,scale==="anno"?250:80),[mine,scale]);
+
+  const [visMax,setVisMax]=useState(1);
+  const recalc=()=>{const el=scroller.current;if(!el||!buckets.length)return;
+    const item=el.scrollWidth/buckets.length;
+    const a=Math.max(0,Math.floor(el.scrollLeft/item));
+    const b=Math.min(buckets.length,Math.ceil((el.scrollLeft+el.clientWidth)/item));
+    const w=buckets.slice(a,Math.max(a+1,b));
+    setVisMax(Math.max(1,...w.map(x=>Math.max(x.in,x.out))));};
+  useEffect(()=>{ if(scroller.current){scroller.current.scrollLeft=scroller.current.scrollWidth;}
+    const id=setTimeout(recalc,60); return ()=>clearTimeout(id);},[buckets,scale]);
+  const max=visMax;
+  const iOwe=myBalance<-0.005;
+
+  const applica=(et)=>{
+    setBusyEt(true);
+    const ids=[...sel];
+    ids.forEach(id=>{
+      fb.updateDoc(fb.doc(fb.db,"transactions",id),{etichetta:et})
+        .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+    });
+    setBusyEt(false); setSel(null); setNuovaEt("");
+    say(et?("Etichetta \""+et+"\" applicata a "+ids.length):"Etichetta rimossa da "+ids.length);
+  };
+
+  const settle=()=>{
+    try{ fb.addDoc(fb.collection(fb.db,"settlements"),
+      {date:today(),amount:Math.round(Math.abs(myBalance)*100)/100,from:user,to:other(user),createdAt:fb.serverTimestamp()})
+      .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+      setConfirm(false); say("Conguaglio registrato");
+    }catch(e){ say("Errore: "+(e.code||e.message)); }
+  };
+
+  return (<>
+    <div style={{display:"flex",gap:6,margin:"14px 0 10px"}}>
+      {["mese","anno"].map(s=>(
+        <button key={s} onClick={()=>setScale(s)} style={{flex:1,padding:9,borderRadius:9,border:"1px solid "+(scale===s?T.brand:T.line),background:scale===s?T.brandSoft:T.surface,color:scale===s?T.brand:T.muted,fontWeight:700,fontSize:13}}>Per {s}</button>
+      ))}
+    </div>
+
+    <Card>
+      <div style={{fontSize:11.5,color:T.muted,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Flusso di cassa · {label(cur.k)}</div>
+      <div style={{fontSize:34,fontWeight:800,letterSpacing:-1.4,margin:"6px 0 2px",color:cur.in-cur.out>=0?T.in:T.out,fontVariantNumeric:"tabular-nums"}}>{eur(cur.in-cur.out)}</div>
+      <div style={{display:"flex",gap:18,fontSize:13,color:T.muted}}>
+        <span>Entrate <b style={{color:T.in}}>{eur(cur.in)}</b></span>
+        <span>Uscite <b style={{color:T.out}}>{eur(cur.out)}</b></span>
+      </div>
+      <div style={{borderTop:"1px solid "+T.line,marginTop:12,paddingTop:11}}>
+        {Math.abs(myBalance)<0.005 ? <div style={{fontSize:14,color:T.muted}}>Nessun debito aperto con {USERS[other(user)]}.</div> : (
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{flex:1,fontSize:14}}>
+              {iOwe?<>Devi a <b>{USERS[other(user)]}</b></>:<><b>{USERS[other(user)]}</b> ti deve</>}
+              <div style={{fontSize:21,fontWeight:800,color:iOwe?T.out:T.in,fontVariantNumeric:"tabular-nums"}}>{eur(Math.abs(myBalance))}</div>
+            </div>
+            <Btn kind={iOwe?"primary":"ghost"} disabled={!iOwe} onClick={()=>setConfirm(true)} style={{width:"auto",padding:"10px 16px"}}>Conguaglio</Btn>
+          </div>
+        )}
+      </div>
+    </Card>
+
+    {confirm && (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:22,zIndex:90}}>
+        <Card style={{maxWidth:340}}>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Conferma conguaglio</div>
+          <div style={{fontSize:14.5,lineHeight:1.5,marginBottom:16}}>Hai fatto bonifico di <b>{eur(Math.abs(myBalance))}</b> a <b>{USERS[other(user)]}</b>?</div>
+          <div style={{display:"flex",gap:8}}>
+            <Btn kind="ghost" onClick={()=>setConfirm(false)}>No</Btn>
+            <Btn onClick={settle}>Sì, conguaglia</Btn>
+          </div>
+        </Card>
+      </div>
+    )}
+
+    <H>Andamento {scale==="mese"?"mensile":"annuale"}</H>
+    <Card style={{padding:"14px 10px"}}>
+      <div style={{display:"flex"}}>
+        <div style={{flex:"0 0 auto",width:46,height:110,position:"relative",marginRight:4}}>
+          {[1,0.5,0].map(f=><div key={f} style={{position:"absolute",right:0,top:(1-f)*110-6,fontSize:9.5,color:T.muted,fontVariantNumeric:"tabular-nums"}}>{eur0(max*f)}</div>)}
+        </div>
+        <div ref={scroller} onScroll={recalc} style={{overflowX:"auto",display:"flex",gap:12,alignItems:"flex-end",paddingBottom:6,flex:1,borderLeft:"1px solid "+T.line,paddingLeft:8}}>
+          {buckets.map(b=>(
+            <div key={b.k} style={{flex:"0 0 auto",textAlign:"center",width:44}}>
+              <div style={{display:"flex",gap:3,alignItems:"flex-end",justifyContent:"center",height:110}}>
+                <div style={{width:15,height:Math.max(2,Math.min(110,(b.in/max)*110)),background:T.in,borderRadius:"3px 3px 0 0"}} />
+                <div style={{width:15,height:Math.max(2,Math.min(110,(b.out/max)*110)),background:T.out,borderRadius:"3px 3px 0 0"}} />
+              </div>
+              <div style={{fontSize:10,color:T.muted,marginTop:5,fontWeight:600}}>{label(b.k)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{fontSize:11,color:T.muted,marginTop:4,textAlign:"center"}}>Scorri con il dito · verde entrate, rosso uscite</div>
+    </Card>
+
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",margin:"16px 0 7px"}}>
+      <span style={{fontSize:11,letterSpacing:1.2,textTransform:"uppercase",color:T.muted,fontWeight:700}}>Movimenti · solo la tua quota</span>
+      <button onClick={()=>{setSel(sel?null:new Set());setNuovaEt("");}}
+        style={{background:sel?T.brand:T.surface,color:sel?"#fff":T.brand,border:"1px solid "+T.brand,
+        borderRadius:16,padding:"5px 11px",fontSize:12,fontWeight:700}}>{sel?"Annulla":"Applica etichetta"}</button>
+    </div>
+    {sel && (
+      <Card style={{marginBottom:8,background:"#F3EFF9",borderColor:"#D8CCEA"}}>
+        <div style={{fontSize:13,marginBottom:8}}>Tocca i movimenti da etichettare. Selezionati: <b>{sel.size}</b></div>
+        <input placeholder="Etichetta nuova o esistente" value={nuovaEt} list="etichette-bulk"
+          onChange={e=>setNuovaEt(e.target.value)} style={{...sel2}} />
+        <datalist id="etichette-bulk">{(etichette||[]).map(e=><option key={e} value={e} />)}</datalist>
+        <div style={{display:"flex",gap:8,marginTop:9}}>
+          <Btn kind="ghost" disabled={!sel.size||busyEt} onClick={()=>applica("")}>Togli etichetta</Btn>
+          <Btn disabled={!sel.size||!nuovaEt.trim()||busyEt} onClick={()=>applica(nuovaEt.trim())}>
+            {busyEt?"Applico…":"Applica a "+sel.size}</Btn>
+        </div>
+      </Card>
+    )}
+    <Card style={{padding:"4px 14px"}}>
+      {recent.length===0 && <div style={{padding:"14px 0",fontSize:13.5,color:T.muted}}>Nessun movimento. Premi + per registrare il primo.</div>}
+      {recent.map(({t,q},i)=>{
+        const {leaf,group,sub}=meta(t);
+        const k=key(t.date), prev=i>0?key(recent[i-1].t.date):null, head=k!==prev;
+        const titolo=scale==="mese"?MESILUNGHI[+k.slice(5,7)-1]+" "+k.slice(0,4):k;
+        return (<React.Fragment key={t.id}>
+          {head && <div style={{position:"sticky",top:-1,background:T.surface,padding:"10px 0 6px",borderBottom:"2px solid "+T.brand,marginTop:i?10:0,zIndex:2}}>
+            <span style={{fontSize:12.5,fontWeight:800,letterSpacing:.6,textTransform:"uppercase",color:T.brand}}>{titolo}</span></div>}
+          <div onClick={()=>{ if(sel){ const n=new Set(sel); n.has(t.id)?n.delete(t.id):n.add(t.id); setSel(n); }
+              else { setEditing(t); setView("add"); } }}
+            style={{display:"flex",gap:10,alignItems:"center",padding:"10px 0",borderBottom:"1px solid "+T.line,
+            background:sel&&sel.has(t.id)?"#F3EFF9":"transparent"}}>
+            {sel && <div style={{width:20,height:20,borderRadius:5,border:"2px solid "+(sel.has(t.id)?"#7A5AA8":T.line),
+              background:sel.has(t.id)?"#7A5AA8":"#fff",color:"#fff",fontSize:13,lineHeight:"17px",textAlign:"center",flex:"0 0 auto"}}>{sel.has(t.id)?"✓":""}</div>}
+            <div style={{fontSize:20}}>{group?group.icon:"📌"}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                {sub?sub.name:(leaf?leaf.name:(group?group.name:"?"))}{t.note?<span style={{color:T.muted,fontWeight:400}}> · {t.note}</span>:null}</div>
+              <div style={{fontSize:11.5,color:T.muted}}>
+                {t.date.slice(8,10)}/{t.date.slice(5,7)} · {group?group.name:""}{sub&&leaf?" · "+leaf.name:""} · {L2LABEL[group?group.l2:""]}
+                {t.shared&&<span style={{color:T.brand,fontWeight:700}}> · condivisa {t.splitPercent}%</span>}
+                {t.createdBy!==user&&<span> · da {USERS[t.createdBy]}</span>}
+                {t.editedBy&&<span> · mod. {USERS[t.editedBy]}</span>}
+                {t.pending&&<span style={{color:"#B8860B",fontWeight:700}}> · in attesa</span>}
+              </div>
+              {t.etichetta&&<div style={{fontSize:11.5,color:"#7A5AA8",fontWeight:700}}>{t.etichetta}</div>}
+            </div>
+            <div style={{fontWeight:700,fontSize:14.5,color:t.type==="income"?T.in:T.out,fontVariantNumeric:"tabular-nums"}}>{t.type==="income"?"+":"−"}{eur(q).slice(1)}</div>
+          </div>
+        </React.Fragment>);
+      })}
+    </Card>
+  </>);
+}
+
+/* ---------- Inserimento / modifica ---------- */
+function AddEdit({cats,user,initial,onSave,onDelete,onCancel,etichette}){
+  const o=other(user);
+  const [kind,setKind]=useState(initial?(initial.shared?(initial.type==="income"?"ic":"ec"):(initial.type==="income"?"i":"e")):"e");
+  const [expr,setExpr]=useState(initial?String(initial.amount):"");
+  const [mode,setMode]=useState(initial?.splitMode||"paid_by_me_split");
+  const [pct,setPct]=useState(initial?.splitPercent||50);
+  const [date,setDate]=useState(initial?.date||today());
+  const [note,setNote]=useState(initial?.note||"");
+  const [leafId,setLeafId]=useState(initial?.leafId||null);
+  const [subId,setSubId]=useState(initial?.subId||null);
+  const [etichetta,setEtichetta]=useState(initial?.etichetta||"");
+  const [busy,setBusy]=useState(false);
+
+  const shared=kind==="ec"||kind==="ic";
+  const type=(kind==="i"||kind==="ic")?"income":"expense";
+  const l1=type==="income"?"entrate":"spese";
+  const [l2,setL2]=useState(()=>{
+    if(initial){ const g=cats.groups.find(x=>x.id===initial.groupId)
+        ||(initial.leafId?cats.groups.find(x=>x.id===(cats.leaves.find(y=>y.id===initial.leafId)||{}).groupId):null);
+      if(g) return g.l2; return initial.type==="income"?"stipendio":"variabili"; }
+    return "variabili";});
+  const [gid,setGid]=useState(()=>{
+    if(!initial) return null;
+    if(initial.groupId&&cats.groups.some(g=>g.id===initial.groupId)) return initial.groupId;
+    const lf=cats.leaves.find(x=>x.id===initial.leafId); return lf?lf.groupId:null;});
+  const first=useRef(true);
+  useEffect(()=>{ if(first.current){first.current=false;return;}
+    if(l1==="entrate"&&(l2==="fisse"||l2==="variabili")){setL2("stipendio");setGid(null);setLeafId(null);}
+    if(l1==="spese"&&(l2==="stipendio"||l2==="altre_entrate")){setL2("variabili");setGid(null);setLeafId(null);}
+  },[l1]);
+
+  const groups=cats.groups.filter(g=>g.l2===l2&&!g.archived);
+  const leaves=cats.leaves.filter(l=>l.groupId===gid&&!l.archived);
+  const subs=(cats.subs||[]).filter(x=>x.leafId===leafId&&!x.archived);
+  const val=calc(expr);
+  const ok=!isNaN(val)&&val>0&&gid&&!busy;
+  const K=({c,act})=><button onClick={act||(()=>setExpr(expr+c))} style={{flex:1,padding:"15px 0",fontSize:19,fontWeight:600,background:T.surface,border:"1px solid "+T.line,borderRadius:10}}>{c}</button>;
+
+  return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:12}}>{initial?"Modifica movimento":"Nuovo movimento"}</div>
+      <select value={kind} onChange={e=>setKind(e.target.value)} style={sel2}>
+        <option value="e">Spesa</option><option value="i">Entrata</option>
+        <option value="ec">Spesa condivisa</option><option value="ic">Entrata condivisa</option>
+      </select>
+
+      <Card style={{margin:"10px 0"}}>
+        <div style={{fontSize:12,color:T.muted,fontWeight:700}}>{type==="income"?"ENTRATA +":"USCITA −"}</div>
+        <div style={{fontSize:30,fontWeight:800,fontVariantNumeric:"tabular-nums",letterSpacing:-1,color:type==="income"?T.in:T.out,minHeight:40,wordBreak:"break-all"}}>{expr||"0"}</div>
+        <div style={{fontSize:13,color:isNaN(val)?T.out:T.muted}}>{expr?(isNaN(val)?"espressione non valida":"= "+eur(val)):"digita o calcola, e.g. 12.50+4"}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:10}}>
+          {["7","8","9","("].map(c=><K key={c} c={c}/>)}
+          {["4","5","6",")"].map(c=><K key={c} c={c}/>)}
+          {["1","2","3","+"].map(c=><K key={c} c={c}/>)}
+          {[".","0","-","*"].map(c=><K key={c} c={c}/>)}
+          <K c="/"/><K c="⌫" act={()=>setExpr(expr.slice(0,-1))}/><K c="C" act={()=>setExpr("")}/>
+          <K c="=" act={()=>{const v=calc(expr);if(!isNaN(v))setExpr(String(Math.round(v*100)/100));}}/>
+        </div>
+      </Card>
+
+      {shared && (
+        <Card style={{marginBottom:10}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:6}}>CONDIVISIONE</div>
+          <select value={mode} onChange={e=>setMode(e.target.value)} style={sel2}>
+            {["paid_by_me_split","paid_by_other_split","i_owe_full","other_owes_full"].map(m=><option key={m} value={m}>{SPLITLABEL(m,o)}</option>)}
+          </select>
+          {(mode==="paid_by_me_split"||mode==="paid_by_other_split") && (
+            <select value={pct} onChange={e=>setPct(+e.target.value)} style={{...sel2,marginTop:8}}>
+              {[10,20,30,40,50,60,70,80,90].map(p=><option key={p} value={p}>La tua quota {p}% · {USERS[o]} {100-p}%</option>)}
+            </select>
+          )}
+          {!isNaN(val)&&val>0 && (
+            <div style={{fontSize:12.5,color:T.muted,marginTop:8,background:T.brandSoft,padding:9,borderRadius:8}}>
+              A te {eur(shareFor({type,amount:val,shared:true,splitMode:mode,splitPercent:pct,createdBy:user},user))} · a {USERS[o]} {eur(shareFor({type,amount:val,shared:true,splitMode:mode,splitPercent:pct,createdBy:user},o))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card style={{marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:6}}>CATEGORIA</div>
+        <div style={{display:"flex",gap:6,marginBottom:8}}>
+          {(l1==="spese"?["fisse","variabili"]:["stipendio","altre_entrate"]).map(k=>(
+            <button key={k} onClick={()=>{setL2(k);setGid(null);setLeafId(null);}} style={{flex:1,padding:9,borderRadius:9,border:"1px solid "+(l2===k?T.brand:T.line),background:l2===k?T.brandSoft:T.surface,fontWeight:700,fontSize:13}}>{L2LABEL[k]}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:gid?10:0}}>
+          {groups.map(g=>(
+            <button key={g.id} onClick={()=>{setGid(g.id);setLeafId(null);}} style={{padding:"7px 10px",borderRadius:18,border:"1px solid "+(gid===g.id?T.brand:T.line),background:gid===g.id?T.brandSoft:T.surface,fontSize:13}}>{g.icon} {g.name}</button>
+          ))}
+        </div>
+        {gid && (<>
+          <div style={{fontSize:11,color:T.muted,marginBottom:5}}>Dettaglio (facoltativo, tocca di nuovo per togliere)</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {leaves.map(l=>(
+              <button key={l.id} onClick={()=>{setLeafId(leafId===l.id?null:l.id);setSubId(null);}} style={{padding:"7px 10px",borderRadius:8,border:"1px solid "+(leafId===l.id?T.brand:T.line),background:leafId===l.id?T.brand:T.surface,color:leafId===l.id?"#fff":T.ink,fontSize:12.5}}>{l.name}</button>
+            ))}
+          </div>
+          {subs.length>0 && (<>
+            <div style={{fontSize:11,color:T.muted,margin:"8px 0 5px"}}>Dettaglio specifico</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {subs.map(x=>(
+                <button key={x.id} onClick={()=>setSubId(subId===x.id?null:x.id)} style={{padding:"6px 9px",borderRadius:8,border:"1px solid "+(subId===x.id?"#7A5AA8":T.line),background:subId===x.id?"#7A5AA8":T.surface,color:subId===x.id?"#fff":T.ink,fontSize:12}}>{x.name}</button>
+              ))}
+            </div>
+          </>)}
+        </>)}
+      </Card>
+
+      <Card style={{marginBottom:12,overflow:"hidden"}}>
+        <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...sel2,WebkitAppearance:"none",appearance:"none",minWidth:0,maxWidth:"100%",display:"block"}} />
+        <input placeholder="Nota (facoltativa)" value={note} onChange={e=>setNote(e.target.value)} style={{...sel2,marginTop:8}} />
+        <input placeholder="Etichetta (es. Viaggio in Giappone)" value={etichetta} list="etichette-note"
+          onChange={e=>setEtichetta(e.target.value)} style={{...sel2,marginTop:8}} />
+        <datalist id="etichette-note">{(etichette||[]).map(e=><option key={e} value={e} />)}</datalist>
+      </Card>
+
+      <Btn disabled={!ok} onClick={()=>{setBusy(true);onSave({id:initial?.id,date,type,
+        amount:Math.round(val*100)/100,groupId:gid,leafId:leafId||null,subId:subId||null,
+        note,etichetta:etichetta.trim(),shared,
+        splitMode:shared?mode:null,splitPercent:pct});}}>{initial?"Salva modifiche":"Registra movimento"}</Btn>
+      {initial && <div style={{marginTop:8}}><Btn kind="danger" onClick={()=>onDelete(initial.id)}>Elimina movimento</Btn></div>}
+      <div style={{marginTop:8,marginBottom:8}}><Btn kind="ghost" onClick={onCancel}>Annulla</Btn></div>
+    </div>
+  );
+}
+
+/* ---------- Report ---------- */
+function Report({tx,user,meta,balances,fb,say}){
+  const [rev,setRev]=useState(""),[fin,setFin]=useState(""),[int,setInt]=useState("");
+  const mine=tx.map(t=>({t,q:shareFor(t,user)})).filter(x=>x.q>0.0001);
+  const byYear=useMemo(()=>{
+    const m={};
+    mine.forEach(({t,q})=>{const y=t.date.slice(0,4),g=meta(t).group;if(!g)return;
+      m[y]=m[y]||{y,fisse:0,variabili:0,entrate:0};
+      if(t.type==="income")m[y].entrate+=q;else m[y][g.l2]+=q;});
+    return Object.values(m).sort((a,b)=>a.y.localeCompare(b.y));},[tx,user]);
+
+  const addSnapshot=()=>{
+    if(!rev&&!fin&&!int) return say("Inserisci almeno un valore");
+    try{ fb.addDoc(fb.collection(fb.db,"balances"),
+      {date:today(),revolut:+rev||0,fineco:+fin||0,intesa:+int||0,createdBy:user,createdAt:fb.serverTimestamp()})
+      .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+      setRev("");setFin("");setInt("");say("Rilevazione salvata");}catch(e){say("Errore: "+(e.code||e.message));}
+  };
+
+  const Bars=({rows,keys,colors,labelKey})=>{
+    const box=useRef(null);
+    const full=Math.max(1,...rows.flatMap(r=>keys.map(k=>Math.abs(r[k]))));
+    const [max,setMax]=useState(full);
+    const recalc=()=>{const el=box.current;if(!el||!rows.length)return;
+      const item=el.scrollWidth/rows.length;
+      const a=Math.max(0,Math.floor(el.scrollLeft/item));
+      const b=Math.min(rows.length,Math.ceil((el.scrollLeft+el.clientWidth)/item));
+      const w=rows.slice(a,Math.max(a+1,b));
+      setMax(Math.max(1,...w.flatMap(r=>keys.map(k=>Math.abs(r[k])))));};
+    useEffect(()=>{const id=setTimeout(recalc,60);return ()=>clearTimeout(id);},[rows]);
+    return (
+      <div style={{display:"flex",padding:"8px 0"}}>
+        <div style={{flex:"0 0 auto",width:48,height:100,position:"relative",marginRight:4}}>
+          {[1,0.5,0].map(f=><div key={f} style={{position:"absolute",right:0,top:(1-f)*100-6,fontSize:9.5,color:T.muted,fontVariantNumeric:"tabular-nums"}}>{eur0(max*f)}</div>)}
+        </div>
+        <div ref={box} onScroll={recalc} style={{display:"flex",gap:14,alignItems:"flex-end",overflowX:"auto",flex:1,borderLeft:"1px solid "+T.line,paddingLeft:8}}>
+          {rows.map(r=>(
+            <div key={r[labelKey]} style={{flex:"0 0 auto",textAlign:"center"}}>
+              <div style={{display:"flex",gap:4,alignItems:"flex-end",height:100}}>
+                {keys.map((k,i)=><div key={k} style={{width:17,height:Math.max(2,Math.min(100,(Math.abs(r[k])/max)*100)),background:colors[i],borderRadius:"3px 3px 0 0",opacity:r[k]<0?0.5:1}} />)}
+              </div>
+              <div style={{fontSize:10.5,color:T.muted,marginTop:5,fontWeight:600}}>{r[labelKey]}</div>
+            </div>
+          ))}
+        </div>
+      </div>);
+  };
+  const Tab=({head,rows})=>(
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5,fontVariantNumeric:"tabular-nums"}}>
+        <thead><tr>{head.map((h,i)=><th key={i} style={{textAlign:i?"right":"left",padding:"6px 5px",borderBottom:"2px solid "+T.line,color:T.muted,fontSize:10.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+        <tbody>{rows.map((r,i)=><tr key={i}>{r.map((c,j)=><td key={j} style={{textAlign:j?"right":"left",padding:"6px 5px",borderBottom:"1px solid "+T.line,color:(j%2===0&&j)?T.muted:T.ink,whiteSpace:"nowrap"}}>{c}</td>)}</tr>)}</tbody>
+      </table>
+    </div>);
+
+  return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:4}}>Report · {USERS[user]}</div>
+      <div style={{fontSize:12.5,color:T.muted,marginBottom:12}}>Cifre precise e, a destra di ciascuna, l'arrotondamento al centinaio più vicino.</div>
+
+      <H>1 · Fisse, variabili ed entrate per anno</H>
+      <Card>
+        <Bars rows={byYear} keys={["fisse","variabili","entrate"]} colors={[T.brand,"#7FA3C7",T.in]} labelKey="y" />
+        <div style={{fontSize:11,color:T.muted,marginBottom:8}}>■ fisse ■ variabili ■ entrate</div>
+        <Tab head={["Anno","Fisse","~100","Variabili","~100","Entrate","~100"]}
+          rows={[...byYear].reverse().map(r=>[r.y,eur(r.fisse),eur0(round100(r.fisse)),eur(r.variabili),eur0(round100(r.variabili)),eur(r.entrate),eur0(round100(r.entrate))])} />
+      </Card>
+
+      <H>2 · Patrimoni per rilevazione</H>
+      <Card>
+        <Bars rows={balances.map(b=>({...b,lab:b.date.slice(2,7)}))} keys={["revolut","fineco","intesa"]} colors={["#2E6BE6",T.brand,"#0E8A6A"]} labelKey="lab" />
+        <div style={{fontSize:11,color:T.muted,marginBottom:8}}>■ Revolut ■ Fineco ■ Intesa</div>
+        <Tab head={["Data","Revolut","~100","Fineco","~100","Intesa","~100","Totale","~100"]}
+          rows={[...balances].reverse().map(b=>{const tot=b.revolut+b.fineco+b.intesa;
+            return [b.date,eur(b.revolut),eur0(round100(b.revolut)),eur(b.fineco),eur0(round100(b.fineco)),eur(b.intesa),eur0(round100(b.intesa)),eur(tot),eur0(round100(tot))];})} />
+        <div style={{borderTop:"1px solid "+T.line,marginTop:12,paddingTop:10}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:7}}>NUOVA RILEVAZIONE · {today()}</div>
+          <input placeholder="Revolut (conto deposito)" value={rev} onChange={e=>setRev(e.target.value)} inputMode="decimal" style={sel2} />
+          <input placeholder="Fineco (investimenti)" value={fin} onChange={e=>setFin(e.target.value)} inputMode="decimal" style={{...sel2,marginTop:7}} />
+          <input placeholder="Intesa Sanpaolo" value={int} onChange={e=>setInt(e.target.value)} inputMode="decimal" style={{...sel2,marginTop:7}} />
+          <div style={{marginTop:9}}><Btn kind="ghost" onClick={addSnapshot}>Salva rilevazione</Btn></div>
+        </div>
+      </Card>
+
+      <H>3 · Differenza entrate meno uscite per anno</H>
+      <Card>
+        <Bars rows={byYear.map(r=>({...r,netto:r.entrate-r.fisse-r.variabili}))} keys={["netto"]} colors={[T.in]} labelKey="y" />
+        <Tab head={["Anno","Entrate","~100","Uscite","~100","Netto","~100"]}
+          rows={[...byYear].reverse().map(r=>{const u=r.fisse+r.variabili,n=r.entrate-u;
+            return [r.y,eur(r.entrate),eur0(round100(r.entrate)),eur(u),eur0(round100(u)),eur(n),eur0(round100(n))];})} />
+      </Card>
+
+      <div style={{margin:"16px 0 4px"}}><Btn onClick={()=>{try{window.print();}catch(e){say("Stampa non disponibile");}}}>Condividi report in PDF</Btn></div>
+      <div style={{fontSize:11.5,color:T.muted,lineHeight:1.5,paddingBottom:10}}>Su iPhone si apre la stampa: pizzica per ingrandire l'anteprima, poi usa Condividi per inviare il PDF via mail.</div>
+    </div>
+  );
+}
+
+/* ---------- Categorie ---------- */
+function CatsView({cats,saveCats,tx,say}){
+  const [l2,setL2]=useState("fisse");
+  const [newLeaf,setNewLeaf]=useState({});
+  const [newGroup,setNewGroup]=useState("");
+  const [picking,setPicking]=useState(null);
+  const count=(leafId)=>tx.filter(t=>t.leafId===leafId).length;
+  const gcount=(gid)=>tx.filter(t=>t.groupId===gid).length;
+  const scount=(sid)=>tx.filter(t=>t.subId===sid).length;
+  const subs=cats.subs||[];
+  const addSub=(lid)=>{const n=(newLeaf["s"+lid]||"").trim();if(!n)return;
+    saveCats({...cats,subs:[...subs,{id:lid+"."+slug(n)+"_"+Date.now(),leafId:lid,name:n,archived:false}]});
+    setNewLeaf({...newLeaf,["s"+lid]:""});say("Dettaglio aggiunto");};
+
+  const rename=(kind,id,name)=>{
+    if(!name||!name.trim()) return;
+    saveCats(kind==="g"
+      ?{...cats,groups:cats.groups.map(g=>g.id===id?{...g,name:name.trim()}:g)}
+      :{...cats,leaves:cats.leaves.map(l=>l.id===id?{...l,name:name.trim()}:l)});
+    say("Rinominata, lo storico si aggiorna da solo");
+  };
+  const addLeaf=(gid)=>{const n=(newLeaf[gid]||"").trim();if(!n)return;
+    saveCats({...cats,leaves:[...cats.leaves,{id:gid+"."+slug(n)+"_"+Date.now(),groupId:gid,name:n,archived:false}]});
+    setNewLeaf({...newLeaf,[gid]:""});say("Voce aggiunta");};
+  const addGroup=()=>{const n=newGroup.trim();if(!n)return;
+    const l1=(l2==="fisse"||l2==="variabili")?"spese":"entrate";
+    saveCats({...cats,groups:[...cats.groups,{id:l2+"."+slug(n)+"_"+Date.now(),l1,l2,name:n,icon:autoEmoji(n),archived:false}]});
+    setNewGroup("");say("Gruppo aggiunto con emoji "+autoEmoji(n));};
+  const removeLeaf=(l)=>{
+    if(count(l.id)>0){ saveCats({...cats,leaves:cats.leaves.map(x=>x.id===l.id?{...x,archived:!x.archived}:x)});
+      say(l.archived?"Voce riattivata":"Archiviata: ha "+count(l.id)+" movimenti collegati"); }
+    else { saveCats({...cats,leaves:cats.leaves.filter(x=>x.id!==l.id)}); say("Voce eliminata"); }};
+  const removeGroup=(g)=>{
+    const n=gcount(g.id);
+    if(n>0){ saveCats({...cats,groups:cats.groups.map(x=>x.id===g.id?{...x,archived:!x.archived}:x)});
+      say(g.archived?"Gruppo riattivato":"Archiviato: ha "+n+" movimenti"); }
+    else { saveCats({...cats,groups:cats.groups.filter(x=>x.id!==g.id),leaves:cats.leaves.filter(x=>x.groupId!==g.id)}); say("Gruppo eliminato"); }};
+
+  return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:4}}>Categorie</div>
+      <div style={{fontSize:12.5,color:T.muted,marginBottom:12}}>Livelli 1 e 2 fissi. Gruppi e voci si aggiungono e rinominano; la rinomina è retroattiva su tutto lo storico.</div>
+      <div style={{display:"flex",gap:5,marginBottom:12,flexWrap:"wrap"}}>
+        {Object.keys(TREE).map(k=>(
+          <button key={k} onClick={()=>setL2(k)} style={{padding:"7px 11px",borderRadius:18,border:"1px solid "+(l2===k?T.brand:T.line),background:l2===k?T.brandSoft:T.surface,fontSize:12.5,fontWeight:600}}>{L2LABEL[k]}</button>
+        ))}
+      </div>
+      {cats.groups.filter(g=>g.l2===l2).map(g=>(
+        <Card key={g.id} style={{marginBottom:9,opacity:g.archived?0.5:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <button onClick={()=>setPicking(picking===g.id?null:g.id)} style={{fontSize:19,background:picking===g.id?T.brandSoft:"none",border:"1px solid "+(picking===g.id?T.brand:T.line),borderRadius:8,padding:"3px 7px"}}>{g.icon}</button>
+            <input defaultValue={g.name} onBlur={e=>e.target.value!==g.name&&rename("g",g.id,e.target.value)} style={{flex:1,border:"none",fontSize:15,fontWeight:700,background:"none",color:T.ink,minWidth:0}} />
+            <button onClick={()=>removeGroup(g)} style={{background:"none",border:"1px solid "+T.line,borderRadius:7,fontSize:11,padding:"3px 7px",color:T.muted}}>{gcount(g.id)>0?(g.archived?"riattiva":"archivia"):"elimina"}</button>
+          </div>
+          {picking===g.id && (
+            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:8,padding:8,background:T.bg,borderRadius:9,maxHeight:150,overflowY:"auto"}}>
+              {PALETTE.map((e,i)=><button key={i} onClick={()=>{saveCats({...cats,groups:cats.groups.map(x=>x.id===g.id?{...x,icon:e}:x)});setPicking(null);say("Emoji aggiornata");}} style={{fontSize:18,background:"none",border:"none",padding:2}}>{e}</button>)}
+            </div>
+          )}
+          <div style={{marginTop:8}}>
+            {cats.leaves.filter(l=>l.groupId===g.id).map(l=>(
+            <React.Fragment key={l.id}>
+              <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 0",borderTop:"1px solid "+T.line,opacity:l.archived?0.45:1}}>
+                <input defaultValue={l.name} onBlur={e=>e.target.value!==l.name&&rename("l",l.id,e.target.value)} style={{flex:1,border:"none",fontSize:13.5,background:"none",color:T.ink,minWidth:0}} />
+                <span style={{fontSize:11,color:T.muted}}>{count(l.id)}</span>
+                <button onClick={()=>removeLeaf(l)} style={{background:"none",border:"1px solid "+T.line,borderRadius:7,fontSize:11,padding:"3px 7px",color:T.muted}}>{count(l.id)>0?(l.archived?"riattiva":"archivia"):"elimina"}</button>
+              </div>
+              {(subs.filter(x=>x.leafId===l.id).length>0 || newLeaf["s"+l.id]!==undefined) && (
+                <div style={{marginLeft:14,paddingLeft:8,borderLeft:"2px solid #E3DAF0"}}>
+                  {subs.filter(x=>x.leafId===l.id).map(x=>(
+                    <div key={x.id} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0"}}>
+                      <input defaultValue={x.name} onBlur={e=>e.target.value!==x.name&&saveCats({...cats,subs:subs.map(y=>y.id===x.id?{...y,name:e.target.value.trim()}:y)})}
+                        style={{flex:1,border:"none",fontSize:12.5,background:"none",color:"#5B4980",minWidth:0}} />
+                      <span style={{fontSize:10.5,color:T.muted}}>{scount(x.id)}</span>
+                      <button onClick={()=>{ if(scount(x.id)>0) saveCats({...cats,subs:subs.map(y=>y.id===x.id?{...y,archived:!y.archived}:y)});
+                          else saveCats({...cats,subs:subs.filter(y=>y.id!==x.id)}); }}
+                        style={{background:"none",border:"1px solid "+T.line,borderRadius:6,fontSize:10,padding:"2px 6px",color:T.muted}}>{scount(x.id)>0?(x.archived?"riattiva":"archivia"):"elimina"}</button>
+                    </div>
+                  ))}
+                  <div style={{display:"flex",gap:5,marginTop:4}}>
+                    <input placeholder="Nuovo dettaglio…" value={newLeaf["s"+l.id]||""} onChange={e=>setNewLeaf({...newLeaf,["s"+l.id]:e.target.value})}
+                      style={{...sel2,padding:"5px 8px",fontSize:12.5}} />
+                    <button onClick={()=>addSub(l.id)} style={{background:"#F3EFF9",border:"1px solid #7A5AA8",color:"#7A5AA8",borderRadius:8,padding:"0 10px",fontWeight:700,fontSize:13}}>+</button>
+                  </div>
+                </div>
+              )}
+              {subs.filter(x=>x.leafId===l.id).length===0 && newLeaf["s"+l.id]===undefined && (
+                <button onClick={()=>setNewLeaf({...newLeaf,["s"+l.id]:""})}
+                  style={{background:"none",border:"none",color:"#7A5AA8",fontSize:11,padding:"2px 0 4px 14px"}}>+ aggiungi dettaglio</button>
+              )}
+            </React.Fragment>
+            ))}
+            <div style={{display:"flex",gap:6,marginTop:7}}>
+              <input placeholder="Nuova voce…" value={newLeaf[g.id]||""} onChange={e=>setNewLeaf({...newLeaf,[g.id]:e.target.value})} style={{...sel2,padding:"7px 9px",fontSize:14}} />
+              <button onClick={()=>addLeaf(g.id)} style={{background:T.brandSoft,border:"1px solid "+T.brand,color:T.brand,borderRadius:9,padding:"0 13px",fontWeight:700}}>+</button>
+            </div>
+          </div>
+        </Card>
+      ))}
+      <Card style={{marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:7}}>NUOVO GRUPPO IN {L2LABEL[l2].toUpperCase()}</div>
+        <div style={{display:"flex",gap:6}}>
+          <input placeholder="Nome gruppo…" value={newGroup} onChange={e=>setNewGroup(e.target.value)} style={{...sel2,padding:"8px 10px",fontSize:14}} />
+          <button onClick={addGroup} style={{background:T.brandSoft,border:"1px solid "+T.brand,color:T.brand,borderRadius:9,padding:"0 14px",fontWeight:700}}>+</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------- Dati ---------- */
+const CSVHEAD=["Data","Tipo","Importo","L2","L3","L4","L5","Etichetta","Nota","Split","Quota","InseritoDa"];
+
+function SchermataDati({tx,cats,meta,user,fb,doBackup,config,photo,setSimLock,say,detachTx,attachTx}){
+  const [imp,setImp]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [prog,setProg]=useState(null);
+  const [confermaImport,setConfermaImport]=useState(false);
+  const [nServer,setNServer]=useState(null);
+  const apriConferma=async()=>{
+    setNServer(null); setConfermaImport(true);
+    try{ const s=await fb.getCountFromServer(fb.collection(fb.db,"transactions")); setNServer(s.data().count); }
+    catch(e){ setNServer(tx.length); }
+  };
+
+  const exportCSV=(all)=>{
+    const rows=(all?tx:tx.filter(t=>shareFor(t,user)>0)).map(t=>{
+      const {leaf,group,sub}=meta(t);
+      return [t.date,t.type==="income"?"Entrata":"Spesa",t.amount.toFixed(2),
+        group?group.l2:"",group?group.name:"",leaf?leaf.name:"",sub?sub.name:"",
+        t.etichetta||"",t.note||"",t.shared?t.splitMode:"",t.shared?t.splitPercent:50,t.createdBy];
+    });
+    const csv="\uFEFF"+[CSVHEAD,...rows].map(r=>r.map(c=>'"'+String(c??"").replace(/"/g,'""')+'"').join(";")).join("\n");
+    const how=shareOrDownload(new Blob([csv],{type:"text/csv"}),
+      "SPENDOMETRO_"+(all?"completo":"mio")+"_"+today()+".csv","Export Spendometro");
+    say(how==="fallback"?"Export non riuscito qui, riprova dal telefono":"CSV generato");
+  };
+
+  const onPhoto=(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    const rd=new FileReader();
+    rd.onload=()=>{
+      const img=new Image();
+      img.onload=()=>{
+        const MAXW=1000, MAXH=520;
+        let w=img.width,h=img.height;
+        const sc=Math.min(MAXW/w,MAXH/h,1); w=Math.round(w*sc); h=Math.round(h*sc);
+        const cv=document.createElement("canvas"); cv.width=w; cv.height=h;
+        cv.getContext("2d").drawImage(img,0,0,w,h);
+        let q=0.72,url=cv.toDataURL("image/jpeg",q);
+        while(url.length>700000&&q>0.32){ q-=0.1; url=cv.toDataURL("image/jpeg",q); }
+        if(url.length>900000) return say("Foto troppo pesante, provane una piu piccola");
+        try{ fb.setDoc(fb.doc(fb.db,"meta","photo"),{dataUrl:url,updatedBy:user,updatedAt:fb.serverTimestamp()})
+            .catch(err=>say("Sincronizzazione foto non riuscita: "+(err.code||err.message)));
+          say("Foto aggiornata per entrambi"); }catch(err){ say("Errore: "+(err.code||err.message)); }
+      };
+      img.onerror=()=>say("Immagine non leggibile");
+      img.src=rd.result;
+    };
+    rd.readAsDataURL(file);
+  };
+
+  const parseCSV=(text)=>{
+    text=text.replace(/^\uFEFF/,"");
+    // separatore dedotto dalla prima riga: il piu' frequente fuori dalle virgolette
+    const testa=text.split(/\r?\n/)[0].replace(/"[^"]*"/g,"");
+    const SEP=(testa.split(";").length>=testa.split(",").length)?";":",";
+    const rows=[];let cur=[],f="",q=false;
+    for(let i=0;i<text.length;i++){const c=text[i];
+      if(q){ if(c==='"'&&text[i+1]==='"'){f+='"';i++;} else if(c==='"'){q=false;} else f+=c; }
+      else { if(c==='"')q=true; else if(c===SEP){cur.push(f);f="";}
+        else if(c==="\n"){cur.push(f);rows.push(cur);cur=[];f="";}
+        else if(c!=="\r") f+=c; } }
+    if(f||cur.length){cur.push(f);rows.push(cur);}
+    return rows.filter(r=>r.some(x=>x!==""));
+  };
+
+  const onFile=(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    const r=new FileReader();
+    r.onload=()=>{ try{
+      const rows=parseCSV(String(r.result));
+      const head=rows[0].map(h=>h.trim());
+      const ix=Object.fromEntries(CSVHEAD.map(h=>[h,head.findIndex(x=>x.toLowerCase()===h.toLowerCase())]));
+      if(ix.Data<0||ix.Importo<0||ix.L2<0) return say("Intestazione non riconosciuta");
+      const recs=rows.slice(1).map(r=>({
+        date:(r[ix.Data]||"").slice(0,10),
+        type:(r[ix.Tipo]||"").toLowerCase().startsWith("entrat")?"income":"expense",
+        amount:Math.abs(parseFloat(String(r[ix.Importo]).replace(",","."))||0),
+        l2:(r[ix.L2]||"").trim(), l3:(r[ix.L3]||"").trim(),
+        l4:(r[ix.L4]||"").trim(), l5:(ix.L5>=0?(r[ix.L5]||""):"").trim(),
+        etichetta:(ix.Etichetta>=0?(r[ix.Etichetta]||""):"").trim(),
+        note:(r[ix.Nota]||"").trim(),
+        splitMode:(r[ix.Split]||"").trim()||null,
+        splitPercent:parseInt(r[ix.Quota])||50,
+        createdBy:(r[ix.InseritoDa]||user).trim().toLowerCase(),
+      })).filter(x=>x.date&&x.amount>0);
+      setImp({name:file.name,recs});
+      say("Letto "+file.name+": "+recs.length+" righe");
+    }catch(err){ say("File non leggibile"); } };
+    r.readAsText(file);
+  };
+
+  const cancelRef=useRef(false);
+  const withTimeout=(p,ms,label)=>Promise.race([p,
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout: "+label)),ms))]);
+  const attesa=(ms)=>new Promise(r=>setTimeout(r,ms));
+
+  const doImport=async(sostituisci)=>{
+    if(!imp) return;
+    if(!navigator.onLine) return say("L'import richiede la connessione");
+    setConfermaImport(false);           // chiude subito la finestra di conferma
+    cancelRef.current=false;
+    detachTx();                          // stacco davvero l'ascolto, non solo lo ignoro
+    setBusy(true); setProg({fase:"preparo",fatti:0,tot:imp.recs.length});
+    try{
+      // 1) tassonomia: costruita a piccoli lotti, con pause, cosi' l'interfaccia resta viva
+      let cs=buildCats();
+      const gIndex=new Map(cs.groups.map(g=>[g.l2+"|"+g.name.toLowerCase(),g]));
+      const lIndex=new Map(cs.leaves.map(l=>[l.groupId+"|"+l.name.toLowerCase(),l]));
+      const sIndex=new Map(cs.subs.map(x=>[x.leafId+"|"+x.name.toLowerCase(),x]));
+      const docs=[];
+      const LOTTO=300;
+      for(let i=0;i<imp.recs.length;i++){
+        if(cancelRef.current) throw new Error("annullato");
+        const r=imp.recs[i];
+        const l2=["fisse","variabili","stipendio","altre_entrate"].includes(r.l2)?r.l2:(r.type==="income"?"altre_entrate":"variabili");
+        const l3n=(r.l3||"Altro"); const gk=l2+"|"+l3n.toLowerCase();
+        let g=gIndex.get(gk);
+        if(!g){ g={id:l2+"."+slug(l3n)+"_"+Math.random().toString(36).slice(2,7),
+          l1:(l2==="fisse"||l2==="variabili")?"spese":"entrate",l2,name:l3n,
+          icon:autoEmoji(l3n),archived:false}; cs.groups.push(g); gIndex.set(gk,g); }
+        let lf=null;
+        if(r.l4){ const lk=g.id+"|"+r.l4.toLowerCase(); lf=lIndex.get(lk);
+          if(!lf){ lf={id:g.id+"."+slug(r.l4)+"_"+Math.random().toString(36).slice(2,7),groupId:g.id,name:r.l4,archived:false};
+            cs.leaves.push(lf); lIndex.set(lk,lf); } }
+        let sb=null;
+        if(r.l5&&lf){ const sk=lf.id+"|"+r.l5.toLowerCase(); sb=sIndex.get(sk);
+          if(!sb){ sb={id:lf.id+"."+slug(r.l5)+"_"+Math.random().toString(36).slice(2,7),leafId:lf.id,name:r.l5,archived:false};
+            cs.subs.push(sb); sIndex.set(sk,sb); } }
+        docs.push({date:r.date,type:r.type,amount:r.amount,groupId:g.id,leafId:lf?lf.id:null,
+          subId:sb?sb.id:null,note:r.note,etichetta:r.etichetta,
+          shared:!!r.splitMode,splitMode:r.splitMode,splitPercent:r.splitPercent,
+          createdBy:USERS[r.createdBy]?r.createdBy:user,editedBy:null,source:"import"});
+        if(i%LOTTO===0){ setProg({fase:"preparo",fatti:i,tot:imp.recs.length}); await attesa(0); }
+      }
+
+      // 2) svuota, se richiesto: ogni lotto ha un tempo massimo, cosi' un blocco di rete non resta muto
+      if(sostituisci){
+        for(let i=0;i<tx.length;i+=300){
+          if(cancelRef.current) throw new Error("annullato");
+          setProg({fase:"svuoto",fatti:i,tot:tx.length});
+          const b=fb.writeBatch(fb.db);
+          tx.slice(i,i+300).forEach(t=>b.delete(fb.doc(fb.db,"transactions",t.id)));
+          await withTimeout(b.commit(),45000,"eliminazione lotto");
+        }
+      }
+
+      // 3) categorie, poi movimenti a lotti con tempo massimo
+      await withTimeout(fb.setDoc(fb.doc(fb.db,"meta","categories"),cs),45000,"categorie");
+      for(let i=0;i<docs.length;i+=300){
+        if(cancelRef.current) throw new Error("annullato");
+        setProg({fase:"carico",fatti:i,tot:docs.length});
+        const b=fb.writeBatch(fb.db);
+        docs.slice(i,i+300).forEach(d=>b.set(fb.doc(fb.collection(fb.db,"transactions")),d));
+        await withTimeout(b.commit(),45000,"caricamento lotto");
+      }
+      setProg({fase:"fatto",fatti:docs.length,tot:docs.length});
+      say("Importati "+docs.length+" movimenti"); setImp(null);
+    }catch(e){
+      const msg=String(e.message||e.code||e);
+      say(msg.includes("annullato")?"Import annullato":
+          msg.includes("timeout")?"Connessione troppo lenta, riprova ("+msg+")":
+          "Errore import: "+msg);
+    }
+    attachTx();                          // ricollego: un solo aggiornamento con il risultato finale
+    setBusy(false); setProg(null); cancelRef.current=false;
+  };
+
+    return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:12}}>Dati e backup</div>
+      <Card>
+        <Row l="Movimenti in archivio" r={tx.length} />
+        <Row l="In attesa di sincronizzazione" r={tx.filter(t=>t.pending).length} />
+        <Row l="Etichette in uso" r={[...new Set(tx.map(t=>(t.etichetta||"").trim()).filter(Boolean))].length} />
+        <Row l="Stato" r={navigator.onLine?"connesso":"offline"} />
+        <div style={{marginTop:9}}><Btn kind="ghost" onClick={async()=>{
+          try{ const s=await fb.getCountFromServer(fb.collection(fb.db,"transactions"));
+            say("Sul server risultano "+s.data().count+" movimenti"); }
+          catch(e){ say("Non raggiungo il server: "+(e.code||e.message)); } }}>Verifica quanti movimenti ci sono sul server</Btn></div>
+        <Row l="Ultimo backup" r={config.lastBackup||"mai"} />
+        <div style={{padding:"7px 0"}}>
+          <div style={{fontSize:12,color:T.muted,fontWeight:700,marginBottom:5}}>DESTINATARIO BACKUP</div>
+          <div style={{display:"flex",gap:6}}>
+            <input placeholder="tua@email.com" defaultValue={config.backupEmail} inputMode="email"
+              onBlur={async(e)=>{const v=e.target.value.trim();
+                if(v!==config.backupEmail){ try{ fb.updateDoc(fb.doc(fb.db,"meta","config"),{backupEmail:v}).catch(err=>say("Non sincronizzato: "+(err.code||err.message))); say("Indirizzo salvato"); }catch(err){ say("Errore: "+(err.code||err.message)); } }}}
+              style={{...sel2,padding:"9px 10px",fontSize:14}} />
+          </div>
+          <div style={{fontSize:11,color:T.muted,marginTop:5}}>Salvato su Firestore, non nel codice pubblico.</div>
+        </div>
+        <div style={{marginTop:10}}><Btn onClick={doBackup}>Backup database</Btn></div>
+        <div style={{fontSize:11.5,color:T.muted,marginTop:8,lineHeight:1.5}}>Genera il JSON completo e apre la condivisione. Scegli Mail e invialo a te stesso.</div>
+      </Card>
+      <H>Export</H>
+      <Card>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          <Btn kind="ghost" onClick={()=>exportCSV(true)}>Esporta tutto in CSV</Btn>
+          <Btn kind="ghost" onClick={()=>exportCSV(false)}>Esporta solo la tua quota</Btn>
+        </div>
+      </Card>
+      <H>Import CSV</H>
+      <Card>
+        <input type="file" accept=".csv,text/csv" onChange={onFile} style={{fontSize:13}} />
+        {imp && (<div style={{marginTop:10}}>
+          <div style={{fontSize:12.5,color:T.muted,marginBottom:9}}>{imp.name} · <b>{imp.recs.length}</b> righe pronte.
+            Le categorie mancanti vengono create in automatico.</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <Btn kind="ghost" disabled={busy} onClick={()=>doImport(false)}>Aggiungi ai movimenti esistenti</Btn>
+            <Btn kind="danger" disabled={busy} onClick={apriConferma}>Sostituisci tutto l'archivio</Btn>
+          </div>
+        </div>)}
+        {busy && prog && (
+          <div style={{marginTop:12}}>
+            <div style={{fontSize:12.5,color:T.brand,fontWeight:700,marginBottom:5}}>
+              {({preparo:"Preparo le categorie…",svuoto:"Svuoto l'archivio…",carico:"Carico i movimenti…",fatto:"Fatto"})[prog.fase]}
+              {" "}{prog.fatti} / {prog.tot}
+            </div>
+            <div style={{background:T.bg,borderRadius:8,height:8,overflow:"hidden"}}>
+              <div style={{background:T.brand,height:"100%",width:(prog.tot?Math.min(100,Math.round(prog.fatti/prog.tot*100)):0)+"%",transition:"width .2s"}} />
+            </div>
+            <div style={{marginTop:9}}><Btn kind="ghost" onClick={()=>{cancelRef.current=true;}}>Annulla import</Btn></div>
+          </div>
+        )}
+        <div style={{fontSize:11.5,color:T.muted,marginTop:8,lineHeight:1.5}}>
+          Colonne attese: Data, Tipo, Importo, L2, L3, L4, L5, Etichetta, Nota, Split, Quota, InseritoDa. Separatore punto e virgola.</div>
+      </Card>
+
+      {confermaImport && !busy && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:95,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+          <Card style={{maxWidth:360}}>
+            <div style={{fontSize:16,fontWeight:800,marginBottom:8}}>Sostituire tutto?</div>
+            <div style={{fontSize:14,lineHeight:1.5,marginBottom:14}}>
+              Verranno eliminati i <b>{nServer===null?"…":nServer}</b> movimenti attuali e caricati i <b>{imp?imp.recs.length:0}</b> del file.
+              Anche le categorie tornano a quelle predefinite. Fai prima un backup.</div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn kind="ghost" onClick={()=>setConfermaImport(false)}>Annulla</Btn>
+              <Btn kind="danger" onClick={()=>doImport(true)}>Sostituisci</Btn>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <H>Foto dell'intestazione</H>
+      <Card>
+        <div style={{fontSize:12.5,color:T.muted,lineHeight:1.5,marginBottom:9}}>Condivisa: la stessa foto compare a te e a {USERS[other(user)]}. Viene ridimensionata automaticamente.</div>
+        {photo && <img src={photo} alt="" style={{width:"100%",height:110,objectFit:"cover",borderRadius:10,marginBottom:9}} />}
+        <input type="file" accept="image/*" onChange={onPhoto} style={{fontSize:13}} />
+        {photo && <div style={{marginTop:9}}><Btn kind="danger" onClick={()=>{try{fb.setDoc(fb.doc(fb.db,"meta","photo"),{dataUrl:null}).catch(e=>say("Non sincronizzato: "+(e.code||e.message)));say("Foto rimossa");}catch(e){say("Errore: "+(e.code||e.message));}}}>Rimuovi foto</Btn></div>}
+      </Card>
+
+      <H>Manutenzione</H>
+      <Card style={{marginBottom:10}}>
+        <Row l="Versione installata" r={APP_VERSION} />
+        <div style={{marginTop:9,display:"flex",flexDirection:"column",gap:8}}>
+          <Btn kind="ghost" onClick={()=>{
+            const u=location.href.split("#")[0].split("?")[0]+"?v="+Date.now();
+            location.replace(u);}}>Cerca aggiornamenti</Btn>
+          <Btn kind="ghost" onClick={()=>{setSimLock(true);say("Blocco attivato");}} disabled={user!=="pierangelo"}>Prova il blocco backup</Btn>
+        </div>
+        <div style={{fontSize:11.5,color:T.muted,marginTop:8,lineHeight:1.5}}>Se dopo un aggiornamento del codice la versione non cambia, premi Cerca aggiornamenti.</div>
+      </Card>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+})();
+</script>
+</body>
+</html>
