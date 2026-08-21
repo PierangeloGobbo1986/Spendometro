@@ -1,0 +1,2213 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<title>Spendometro</title>
+<link rel="manifest" href="./manifest.json" />
+<meta name="theme-color" content="#1F3A5F" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Spendometro" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<style>
+  html,body{margin:0;padding:0;background:#EDF0F3;-webkit-text-size-adjust:100%;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#101820;overscroll-behavior-y:contain;}
+  *{-webkit-tap-highlight-color:transparent;}
+  input,select,textarea,button{font-family:inherit;}
+  input,select,textarea{font-size:16px;} /* evita lo zoom automatico su iOS */
+  #root{min-height:100vh;min-height:100dvh;}
+  /* barra di navigazione: elemento a strato separato (translateZ) per evitare che iOS
+     la agganci al contenitore sbagliato durante lo scroll. Il padding di sicurezza si
+     applica UNA sola volta, qui, e non deve essere sommato altrove. */
+  #barra{position:fixed;bottom:0;left:0;right:0;z-index:60;transform:translateZ(0);
+    padding-bottom:env(safe-area-inset-bottom);box-sizing:border-box;}
+  /* il campo data su iOS non si restringe da solo */
+  input[type="date"]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;display:block;}
+  @media print{ .tabscroll{max-height:none!important;overflow:visible!important;} }
+  /* pagina di stampa dedicata: markup separato e semplice, non l'app com'e' */
+  @media screen{ #print-root{display:none;} }
+  @media print{
+    html,body{background:#fff!important;}
+    #root{display:none!important;}          /* tolto dal flusso: non lascia spazio grigio residuo */
+    #print-root{display:block;background:#fff;color:#000;}
+    @page{size:A4;margin:15mm;}
+    #print-root h1{font-size:20px;margin:0 0 2px;}
+    #print-root .sub{font-size:11px;color:#555;margin-bottom:16px;}
+    #print-root h2{font-size:14px;margin:18px 0 6px;border-bottom:1px solid #333;padding-bottom:3px;}
+    #print-root h3{font-size:12px;margin:12px 0 4px;color:#333;}
+    #print-root table{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:10px;}
+    #print-root th,#print-root td{border:1px solid #ccc;padding:3px 5px;text-align:right;}
+    #print-root th:first-child,#print-root td:first-child{text-align:left;}
+    #print-root thead{background:#f0f0f0;}
+    #print-root .chartrow{display:flex;align-items:flex-end;margin:6px 0 10px;page-break-inside:avoid;}
+    #print-root .yaxis{flex:0 0 auto;width:34px;height:80px;position:relative;margin-right:6px;font-size:7px;color:#555;}
+    #print-root .yaxis span{position:absolute;right:0;}
+    #print-root .chart{display:flex;align-items:flex-end;gap:9px;height:96px;flex:1;border-left:1px solid #999;padding-left:6px;overflow:hidden;}
+    #print-root .barcol{display:flex;flex-direction:column;align-items:center;flex:0 0 auto;}
+    #print-root .barwrap{display:flex;gap:2px;align-items:flex-end;height:80px;}
+    #print-root .bar{width:9px;border-radius:2px 2px 0 0;}
+    #print-root .barlbl{font-size:7.5px;color:#555;margin-top:3px;white-space:nowrap;}
+    #print-root .legend{font-size:9px;margin-bottom:4px;}
+    #print-root .legend span{margin-right:3px;}
+  }
+</style>
+
+<!-- Firebase caricato come modulo; l'app lo attende tramite window.fbReady -->
+<script>window.fbReady = new Promise(function (res, rej) { window.__fbOk = res; window.__fbErr = rej; });</script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+           setPersistence, browserLocalPersistence, sendPasswordResetEmail }
+    from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
+  import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+           collection, doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
+           onSnapshot, serverTimestamp, writeBatch, getCountFromServer, getDocsFromServer }
+    from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBGckHKQkEw9u7cprBxECwc25a-5fpFi60",
+    authDomain: "spendometro-618c4.firebaseapp.com",
+    projectId: "spendometro-618c4",
+    storageBucket: "spendometro-618c4.firebasestorage.app",
+    messagingSenderId: "425135887976",
+    appId: "1:425135887976:web:729ee20ee2cbf7cdddcddd"
+  };
+
+  try {
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    await setPersistence(auth, browserLocalPersistence); // sessione permanente
+    // cache locale persistente: offline funzionante, sincronizza al ritorno della rete.
+    // il blocco visto in precedenza era la quota giornaliera Firestore esaurita, non questa cache.
+    let db;
+    try {
+      db = initializeFirestore(app, {
+        localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+        experimentalAutoDetectLongPolling: true
+      });
+    } catch (e) {
+      db = initializeFirestore(app, {});  // ripiego se la cache non e' disponibile (es. Safari privato)
+    }
+    window.__fbOk({ auth, db, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+      sendPasswordResetEmail, collection, doc, getDoc, setDoc, addDoc, updateDoc,
+      deleteDoc, onSnapshot, serverTimestamp, writeBatch, getCountFromServer, getDocsFromServer });
+  } catch (e) { window.__fbErr(e); }
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"></div>
+<div id="print-root"></div>
+
+<script type="text/babel" data-presets="react">
+(function(){
+"use strict";
+const { useState, useMemo, useRef, useEffect } = React;
+
+/* ============================================================
+   SPENDOMETRO — dipartimento contabile del PMAS
+   ============================================================ */
+
+const UIDS = {
+  "trp3V14v3BUzDH1ewj2bUThNPs63": "pierangelo",
+  "e97ZYDqiSGTcQHhqostozxHWdCu2": "martina",
+};
+const USERS = { pierangelo: "Pierangelo", martina: "Martina" };
+const APP_VERSION = "2.9.2";
+const BACKUP_EMAIL_DEFAULT = ""; // impostato dall'app, non nel codice pubblico
+const other = (u) => (u === "pierangelo" ? "martina" : "pierangelo");
+
+const T = {
+  bg:"#EDF0F3", surface:"#FFFFFF", ink:"#101820", muted:"#6B7684", line:"#DDE3E9",
+  brand:"#1F3A5F", brandSoft:"#E7EDF4", in:"#127A57", out:"#C0432C", warnSoft:"#FBF3DF",
+};
+const eur=(n)=>(n<0?"-":"")+"€"+Math.abs(n).toLocaleString("it-IT",{minimumFractionDigits:2,maximumFractionDigits:2});
+const eur0=(n)=>(n<0?"-":"")+"€"+Math.abs(n).toLocaleString("it-IT",{maximumFractionDigits:0});
+const round100=(n)=>Math.round(n/100)*100;
+const MESI=["gen","feb","mar","apr","mag","giu","lug","ago","set","ott","nov","dic"];
+const MESILUNGHI=["Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno","Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"];
+const today=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);};
+const slug=(s)=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
+
+/* ---------- tassonomia iniziale ---------- */
+const ICONS={"Casa": "🏠", "Spesa": "🛒", "Animali": "🐈", "Auto": "🚗", "Bicicletta": "🚲", "Banca": "🏦", "Tasse e contributi": "🧾", "Persona": "💇", "Musica": "🎸", "Sport": "🥋", "Lavoro": "💼", "Cibo fuori": "🍽️", "Salute": "💊", "Tempo libero": "🎭", "Elettronica e Informatica": "💻", "Viaggi": "✈️", "Documenti": "🪪", "Regali": "🎁", "Prestiti a terzi": "🤝", "Altro": "📦", "Stipendio": "💰", "Altre entrate": "🎉"};
+const TREE={"fisse": {"Casa": ["Mutuo", "Affitto", "Spese condominiali", "TARI", "IMU", "Luce", "Gas", "Acqua", "Internet e telefono", "Abbonamenti", "Assicurazione casa", "Pulizie"], "Spesa": ["Spesa alimentare"], "Animali": ["Cibo", "Lettiera"], "Auto": ["Bollo", "Assicurazione auto", "Revisione e tagliando", "Benzina", "Pedaggi", "Parcheggi", "Lavaggi", "Riparazioni", "Multe", "Olio, Lavavetri e AdBlue"], "Bicicletta": ["Riparazioni"], "Banca": ["Imposta di bollo", "Canone carta", "Piano Revolut Metal", "Commissioni"], "Tasse e contributi": ["Commercialista", "INPS e contributi", "Riscatto laurea", "Altre tasse"], "Persona": ["Barbiere", "Parrucchiere", "Assicurazione"], "Musica": ["Scuola"], "Sport": ["Judo", "Palestra"], "Lavoro": ["Associazioni", "Corsi", "Ordine professionale", "Assicurazione professionale", "Sito internet"]}, "variabili": {"Cibo fuori": ["Ristoranti", "Bar e caffe", "Aperitivi", "Delivery"], "Casa": ["Altro", "Manutenzione casa", "Cartoleria", "Arredamento", "Ristrutturazioni e lavori", "Elettrodomestici", "Giardino e piante", "Attrezzi e ferramenta", "Matrimonio"], "Persona": ["Cosmesi e cura", "Estetista", "Vestiti", "Scarpe", "Accessori", "Sigarette"], "Salute": ["Visite", "Farmaci", "Esami", "Dentista", "Occhiali e lenti", "Fisioterapia"], "Tempo libero": ["Cinema e film", "Libri e giornali", "Concerti ed eventi", "Giochi", "Sport e attrezzatura"], "Musica": ["Strumenti", "Libri", "Accessori", "Dischi"], "Elettronica e Informatica": ["Hardware", "Software e servizi"], "Animali": ["Veterinario", "Accessori animali"], "Viaggi": ["Voli", "Alloggio", "Trasporti", "Spese in viaggio", "Visti e documenti"], "Lavoro": ["Conferenze", "Trasferta", "Materiali e attrezzi", "Abbonamenti", "Altro"], "Auto": ["Accessori"], "Documenti": ["Passaporto", "Carta identita", "Patente", "Altro"], "Regali": [], "Prestiti a terzi": [], "Altro": []}, "stipendio": {"Stipendio": []}, "altre_entrate": {"Altre entrate": ["Regali", "Prestazioni occasionali", "Vendite", "Rimborsi", "Restituzione prestiti"]}};
+const TREE5={"fisse|Casa|Abbonamenti": ["Netflix", "Amazon Prime", "Spotify", "NowTV", "iCloud", "PEC", "Altri abbonamenti"]};
+const L2LABEL={fisse:"Fisse",variabili:"Variabili",stipendio:"Stipendio",altre_entrate:"Altre entrate"};
+
+function buildCats(){
+  const groups=[],leaves=[],subs=[];
+  Object.entries(TREE).forEach(([l2,gs])=>{
+    const l1=(l2==="fisse"||l2==="variabili")?"spese":"entrate";
+    Object.entries(gs).forEach(([g,ls])=>{
+      const gid=l2+"."+slug(g);
+      groups.push({id:gid,l1,l2,name:g,icon:ICONS[g]||"📌",archived:false});
+      ls.forEach((l)=>{
+        const lid=gid+"."+slug(l);
+        leaves.push({id:lid,groupId:gid,name:l,archived:false});
+        (TREE5[l2+"|"+g+"|"+l]||[]).forEach((x)=>
+          subs.push({id:lid+"."+slug(x),leafId:lid,name:x,archived:false}));
+      });
+    });
+  });
+  return {groups,leaves,subs};
+}
+
+/* ---------- emoji ---------- */
+const EMOJIRULES=[
+ [["mutuo"],"🏦"],[["condomin"],"🏢"],[["affitt"],"🔑"],[["casa","abit","domestic"],"🏠"],
+ [["tari","rifiut","immondiz","spazzat"],"🗑️"],[["luce","elettric","energ","corrent"],"⚡"],
+ [["gas","metano","caldai","riscald"],"🔥"],[["acqua","idric","acquedott"],"💧"],
+ [["telefon","cellular","sim","iliad","tim","vodafone"],"📱"],[["internet","wifi","fibra","adsl"],"📶"],
+ [["netflix","streaming","abbonament","disney","prime"],"📺"],[["pec","domin","hosting","aruba"],"🌐"],
+ [["pulizi","colf"],"🧽"],[["manutenz","ripar","idraul","elettricist"],"🔧"],
+ [["giardin","pianta","orto","fiori"],"🪴"],[["arred","mobil","ikea","divano"],"🛋️"],
+ [["elettrodom","lavatric","frigo","forno"],"🔌"],[["allarm","sorveglianz","sicurezz"],"🚨"],
+ [["spesa","aliment","super","market","drogher"],"🛒"],[["macell","carne"],"🥩"],
+ [["pane","fornai","panific"],"🥖"],[["frutta","verdur","ortofrut"],"🥕"],
+ [["ristor","cena","pranzo","trattor","osteri","pizzer"],"🍽️"],[["sushi","giappones"],"🍣"],
+ [["bar","caff","colazion"],"☕"],[["aperit","drink","spritz","cocktail","birra"],"🍸"],
+ [["vino","cantin","enotec"],"🍷"],[["gelat","dolc","pasticc"],"🍨"],[["delivery","asporto","glovo","deliveroo"],"🛵"],
+ [["benzin","carburant","diesel","gasolio","rifornim"],"⛽"],[["auto","macchin","vettur"],"🚗"],
+ [["bollo"],"🧾"],[["assicur"],"🛡️"],[["revision","tagliand","mecca","gomm"],"🔩"],
+ [["pedagg","autostrad","telepass"],"🛣️"],[["parchegg","sosta"],"🅿️"],[["lavagg","autolav"],"🧼"],
+ [["multa","sanzion","contravv"],"🚔"],[["bici","ciclo","bicicl"],"🚲"],[["moto","scooter"],"🏍️"],
+ [["treno","ferrov","trenital","italo"],"🚆"],[["bus","autobus","tram","metro","trasport"],"🚌"],
+ [["taxi","uber","ncc"],"🚕"],[["traghett","nave","barca"],"⛴️"],
+ [["barbier","parruc","capell"],"💇"],[["estetist","manicur","unghi","cera"],"💅"],
+ [["cosmes","crema","profum","trucc","makeup"],"🧴"],[["abbigl","vestit","maglion","pantalon"],"👕"],
+ [["scarp","sneaker","stival"],"👟"],[["accessor","borsa","occhial","orolog"],"👜"],
+ [["gioiell","anell","collan"],"💍"],[["sigarett","tabacc","fum","svapo"],"🚬"],
+ [["dentist","odontoiat","ortodon"],"🦷"],[["farmac","medicin","pastigl"],"💊"],
+ [["medic","visit","dottor","specialist"],"🩺"],[["esam","analis","sangue","radiograf"],"🔬"],
+ [["ottic","lenti"],"👓"],[["fisioterap","osteopat","massagg"],"💆"],[["psicolog","terapi"],"🧠"],
+ [["palestr","fitness","gym","crossfit"],"🏋️"],[["judo","karate","marzial","boxe"],"🥋"],
+ [["nuoto","piscin"],"🏊"],[["corsa","running","maraton"],"🏃"],[["sci","montagn","trekking"],"⛷️"],
+ [["calcio","partit","stadio"],"⚽"],[["tennis","padel"],"🎾"],[["sport","attrezz"],"🏅"],
+ [["music","chitarr","strument","dischi","vinil"],"🎸"],[["piano","tastier","artemusic"],"🎹"],
+ [["concert","live","festival"],"🎤"],[["cinema","film","teatr","spettacol"],"🎬"],
+ [["libr","lett","edicol","giornal","riviste"],"📚"],[["museo","mostr","cultur","arte"],"🖼️"],
+ [["gioch","videogioc","console","playstation"],"🎮"],[["fotograf","fotocamer"],"📷"],
+ [["corso","istruzion","scuola","universit","master"],"🎓"],[["svago","hobby","tempo liber"],"🎭"],
+ [["comput","laptop","mac"],"💻"],[["software","app","licenz","icloud","cloud"],"💾"],
+ [["informat","tech","hardware","component"],"🖥️"],[["stampant","toner","cartucc"],"🖨️"],
+ [["gatt","felin"],"🐈"],[["can","cucciol"],"🐕"],[["veterin"],"🩹"],[["animal","croccant","pet"],"🐾"],
+ [["vol","aere","ryanair","aeroport"],"✈️"],[["hotel","alberg","bnb","alloggi","ostell"],"🏨"],
+ [["viagg","vacanz","ferie","gita"],"🧳"],[["mare","spiagg","ombrellon"],"🏖️"],[["campegg","tenda"],"⛺"],
+ [["banca","conto","bonific","commission"],"🏦"],[["cart","bancomat","debito","credito"],"💳"],
+ [["tass","commercial","fisc","f24","irpef","inps"],"🧾"],[["investiment","etf","titol","borsa"],"📈"],
+ [["prestit","finanziam","rata"],"📉"],[["contant","prelievo","atm"],"💵"],
+ [["stipend","salari","paga","busta"],"💰"],[["tredices","quattordices","bonus","premio"],"🎯"],
+ [["rimbors","restitu","storno"],"↩️"],[["vendit","usato","subito","vinted"],"🏷️"],
+ [["regal","compleann","natal","nozze"],"🎁"],[["entrat","guadagn","incass"],"🎉"],
+ [["lavor","ufficio","profession","trasfert"],"💼"],[["material","cancell","forniture"],"📎"],
+ [["congress","conferenz","convegn"],"🎙️"],[["spedizion","post","corrier","amazon"],"📦"],
+ [["donazion","beneficenz","chiesa"],"❤️"],[["figl","bimb","bamb","asilo","baby"],"🧸"],
+ [["matrimon","sposi","cerimoni"],"💒"],[["funeral","lutt"],"🕯️"],[["servizi","vari","altro","extra"],"📌"],
+];
+const autoEmoji=(n)=>{const s=n.toLowerCase();for(const [ks,e] of EMOJIRULES) if(ks.some(k=>s.includes(k))) return e;return "📌";};
+const PALETTE="🏠🏢🔑🗑️⚡🔥💧📱📶📺🌐🧽🔧🪴🛋️🔌🚨🛒🥩🥖🥕🍽️🍣☕🍸🍷🍨🛵⛽🚗🧾🛡️🔩🛣️🅿️🧼🚔🚲🏍️🚆🚌🚕⛴️💇💅🧴👕👟👜💍🚬🦷💊🩺🔬👓💆🧠🏋️🥋🏊🏃⛷️⚽🎾🏅🎸🎹🎤🎬📚🖼️🎮📷🎓🎭💻💾🖥️🖨️🐈🐕🩹🐾✈️🏨🧳🏖️⛺🏦💳📈📉💵💰🎯↩️🏷️🎁🎉💼📎🎙️📦❤️🧸💒🕯️📌".match(/\p{Extended_Pictographic}\uFE0F?/gu);
+
+/* ---------- split ---------- */
+function shareFor(t,user){
+  if(!t.shared) return t.createdBy===user?t.amount:0;
+  const isC=user===t.createdBy,p=(t.splitPercent||50)/100;
+  switch(t.splitMode){
+    case "paid_by_me_split": case "paid_by_other_split": return t.amount*(isC?p:1-p);
+    case "i_owe_full": return isC?t.amount:0;
+    case "other_owes_full": return isC?0:t.amount;
+    default: return 0;
+  }
+}
+function deltaFor(t){
+  if(!t.shared) return 0;
+  const p=(t.splitPercent||50)/100,sign=t.type==="expense"?1:-1;
+  switch(t.splitMode){
+    case "paid_by_me_split": return sign*t.amount*(1-p);
+    case "paid_by_other_split": return -sign*t.amount*p;
+    case "i_owe_full": return -sign*t.amount;
+    case "other_owes_full": return sign*t.amount;
+    default: return 0;
+  }
+}
+// nomi veri, mai "me"/"l'altro": la frase deve restare identica indipendentemente da chi la legge.
+// payer = chi ha creato la spesa (fisso, non cambia mai con la modifica), altro = l'altra persona.
+const SPLITLABEL=(m,payerName,otherName)=>({
+  paid_by_me_split:"Pagato da "+payerName+" e diviso",
+  paid_by_other_split:"Pagato da "+otherName+" e diviso",
+  i_owe_full:payerName+" deve a "+otherName+" l'intera cifra",
+  other_owes_full:otherName+" deve a "+payerName+" l'intera cifra"}[m]);
+// descrizione sintetica per l'elenco movimenti, stessa logica, sempre a nomi fissi
+const condivisioneTesto=(t)=>{
+  const payer=t.createdBy, altro=other(payer), pn=USERS[payer], an=USERS[altro];
+  if(t.splitMode==="paid_by_me_split") return "Pagato da "+pn+" · "+t.splitPercent+"%/"+(100-t.splitPercent)+"%";
+  if(t.splitMode==="paid_by_other_split") return "Pagato da "+an+" · "+t.splitPercent+"%/"+(100-t.splitPercent)+"%";
+  if(t.splitMode==="i_owe_full") return pn+" deve a "+an;
+  if(t.splitMode==="other_owes_full") return an+" deve a "+pn;
+  return "condivisa";
+};
+
+/* ---------- calcolatrice ---------- */
+// converte un testo digitato dall'utente in un numero, accettando sia la virgola sia il punto
+const numDec=(v)=>{ const n=parseFloat(String(v||"").trim().replace(",",".")); return isNaN(n)?0:n; };
+
+/* ---------- aritmetica sulle date (stringhe YYYY-MM-DD), per le spese ricorrenti ---------- */
+const WEEKDAYS=["Domenica","Lunedì","Martedì","Mercoledì","Giovedì","Venerdì","Sabato"];
+const ymdParts=(s)=>{ const [y,m,d]=s.split("-").map(Number); return {y,m,d}; };
+const daysInMonth=(y,m)=>new Date(y,m,0).getDate();   // m = mese 1-based
+const addDaysStr=(s,n)=>{ const {y,m,d}=ymdParts(s); const dt=new Date(Date.UTC(y,m-1,d));
+  dt.setUTCDate(dt.getUTCDate()+n); return dt.toISOString().slice(0,10); };
+const addMonthsStr=(s,n)=>{ const {y,m,d}=ymdParts(s); const tot=(m-1)+n;
+  const ny=y+Math.floor(tot/12), nm=((tot%12)+12)%12+1, nd=Math.min(d,daysInMonth(ny,nm));
+  return ny+"-"+String(nm).padStart(2,"0")+"-"+String(nd).padStart(2,"0"); };
+const prossimaOccorrenza=(s,cad)=> cad==="weekly"?addDaysStr(s,7): cad==="yearly"?addMonthsStr(s,12): addMonthsStr(s,1);
+const cadenzaTesto=(rule)=>{
+  const {y,m,d}=ymdParts(rule.startDate);
+  if(rule.cadence==="weekly"){ const wd=new Date(rule.startDate+"T00:00:00").getDay(); return "Ogni "+WEEKDAYS[wd].toLowerCase(); }
+  if(rule.cadence==="yearly") return "Ogni anno, il "+d+" "+MESILUNGHI[m-1].toLowerCase();
+  return "Ogni mese, il "+d;
+};
+
+/* ---------- report da stampare: markup statico e semplice, costruito al volo ---------- */
+const escHtml=(s)=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+function buildPrintHTML({userName,scale,byPeriod,balances,contiVis,analysis}){
+  const periodHead = scale==="mese"?"Mese":"Anno";
+  const longLabP=(k)=> scale==="mese"? MESILUNGHI[+k.slice(5,7)-1]+" "+k.slice(0,4) : k;
+
+  const tbl=(head,rows)=>"<table><thead><tr>"+head.map(h=>"<th>"+escHtml(h)+"</th>").join("")+"</tr></thead>"+
+    "<tbody>"+rows.map(r=>"<tr>"+r.map(c=>"<td>"+c+"</td>").join("")+"</tr>").join("")+"</tbody></table>";
+
+  // legenda con quadratino colorato coerente con le barre (prima usciva tutta grigia: mancava il colore per-voce)
+  const legend=(items)=>"<div class=\"legend\">"+items.map(([label,color])=>
+    "<span style=\"color:"+color+"\">■</span>"+escHtml(label)).join("&nbsp;&nbsp;")+"</div>";
+
+  // istogramma in puro HTML/CSS con asse Y, niente canvas ne' SVG: la stampa resta rapida
+  const chart=(rows,keys,colors,labelFn)=>{
+    const full=Math.max(1,...rows.flatMap(r=>keys.map(k=>Math.abs(r[k]||0))));
+    const bars=rows.map(r=>{
+      const b=keys.map((k,i)=>{
+        const v=r[k]||0; const h=Math.max(2,Math.round(Math.abs(v)/full*80));
+        const col=typeof colors==="function"?colors(r,i):colors[i];
+        return "<div class=\"bar\" style=\"height:"+h+"px;background:"+col+"\"></div>";
+      }).join("");
+      return "<div class=\"barcol\"><div class=\"barwrap\">"+b+"</div><div class=\"barlbl\">"+escHtml(labelFn(r))+"</div></div>";
+    }).join("");
+    const yax="<div class=\"yaxis\"><span style=\"top:-3px\">"+eur0(full)+"</span><span style=\"top:34px\">"+eur0(full/2)+"</span><span style=\"bottom:-3px\">€0</span></div>";
+    return "<div class=\"chartrow\">"+yax+"<div class=\"chart\">"+bars+"</div></div>";
+  };
+
+  const t1rows=[...byPeriod].reverse().map(r=>[escHtml(longLabP(r.k)),eur(r.fisse),eur0(round100(r.fisse)),eur(r.variabili),eur0(round100(r.variabili)),eur(r.entrate),eur0(round100(r.entrate))]);
+  const t3src=byPeriod.map(r=>({...r,netto:r.entrate-r.fisse-r.variabili}));
+  const t3rows=[...t3src].reverse().map(r=>[escHtml(longLabP(r.k)),eur(r.entrate),eur0(round100(r.entrate)),eur(r.fisse+r.variabili),eur0(round100(r.fisse+r.variabili)),eur(r.netto),eur0(round100(r.netto))]);
+
+  const contiKeys=["revolut","fineco","intesa"].filter(k=>contiVis[k]);
+  const contiLabels={revolut:"Revolut",fineco:"Fineco",intesa:"Intesa"};
+  const contiColors={revolut:"#2E6BE6",fineco:"#1F3A5F",intesa:"#0E8A6A"};
+  const balHead=["Data",...contiKeys.flatMap(k=>[contiLabels[k],"~100"]),"Totale","~100"];
+  const balRows=[...balances].reverse().map(b=>{
+    const tot=contiKeys.reduce((s,k)=>s+(b[k]||0),0);
+    const cells=contiKeys.flatMap(k=>[eur(b[k]||0),eur0(round100(b[k]||0))]);
+    return [escHtml(b.date),...cells,eur(tot),eur0(round100(tot))];
+  });
+
+  // limite di sicurezza sull'elenco dettagliato dei movimenti: e' la tabella che puo' crescere
+  // di piu' (centinaia di righe) e che pesa di piu' sui tempi di impaginazione della stampa.
+  // I totali per periodo restano SEMPRE completi, qui si limita solo il dettaglio riga per riga.
+  const LIMITE_MOVIMENTI=150;
+
+  let analysisHtml="";
+  if(analysis && analysis.active && analysis.serie.length){
+    const palette=["#1F3A5F","#7A5AA8","#B8860B","#0E8A6A","#C0432C"];
+    const rows=[...analysis.rows].reverse().map(r=>[escHtml(longLabP(r.k)),...analysis.serie.map(s=>eur(r[s.id]||0))]);
+    const totRow=["<b>Totale</b>",...analysis.serie.map(s=>"<b>"+eur(analysis.totali[s.id]||0)+"</b>")];
+    const tuttiMov=[...analysis.movimenti].sort((a,b)=>b.t.date.localeCompare(a.t.date));
+    const movRows=tuttiMov.slice(0,LIMITE_MOVIMENTI).map(m=>[
+      escHtml(m.t.date.split("-").reverse().join("/")), escHtml(m.cats.join(", ")), escHtml(m.t.etichetta||""), escHtml(m.t.note||""), eur(m.q)
+    ]);
+    const troncato = tuttiMov.length>LIMITE_MOVIMENTI;
+    analysisHtml =
+      "<h2>4 · Analisi per categoria</h2>"+
+      legend(analysis.serie.map((s,i)=>[s.name,palette[i]]))+
+      chart(analysis.rows,analysis.serie.map(s=>s.id),analysis.serie.map((_,i)=>palette[i]),r=>longLabP(r.k))+
+      tbl([periodHead,...analysis.serie.map(s=>s.name)], [...rows,totRow])+
+      "<h3>Movimenti (" + tuttiMov.length + (troncato? ", i piu' recenti "+LIMITE_MOVIMENTI:"") + ")</h3>"+
+      tbl(["Data","Categoria","Etichetta","Nota","Importo"], movRows)+
+      (troncato? "<div class=\"sub\">Altri "+(tuttiMov.length-LIMITE_MOVIMENTI)+" movimenti non mostrati qui: consultabili nell'app, i totali sopra li includono comunque tutti.</div>":"");
+  }
+
+  return "<h1>Spendometro</h1>"+
+    "<div class=\"sub\">Report di "+escHtml(userName)+" · generato il "+new Date().toLocaleString("it-IT")+"</div>"+
+    "<h2>1 · Fisse, variabili ed entrate per "+(scale==="mese"?"mese":"anno")+"</h2>"+
+    legend([["Fisse","#1F3A5F"],["Variabili","#7FA3C7"],["Entrate","#127A57"]])+
+    chart(byPeriod,["fisse","variabili","entrate"],["#1F3A5F","#7FA3C7","#127A57"],r=>longLabP(r.k))+
+    tbl([periodHead,"Fisse","~100","Variabili","~100","Entrate","~100"], t1rows)+
+    "<h2>2 · Patrimoni per rilevazione</h2>"+
+    (contiKeys.length? (
+      legend(contiKeys.map(k=>[contiLabels[k],contiColors[k]]))+
+      chart(balances.map(b=>({...b,lab:b.date.slice(2,7)})),contiKeys,contiKeys.map(k=>contiColors[k]),r=>r.lab)
+    ):"")+
+    tbl(balHead, balRows)+
+    "<h2>3 · Differenza entrate meno uscite per "+(scale==="mese"?"mese":"anno")+"</h2>"+
+    legend([["In attivo","#127A57"],["In passivo","#C0432C"]])+
+    chart(t3src,["netto"],(r)=>r.netto<0?"#C0432C":"#127A57",r=>longLabP(r.k))+
+    tbl([periodHead,"Entrate","~100","Uscite","~100","Netto","~100"], t3rows)+
+    analysisHtml;
+}
+
+function calc(expr){
+  const tk=String(expr).replace(/,/g,".").match(/(\d+\.?\d*|[+\-*/()])/g);
+  if(!tk) return NaN;
+  let i=0; const peek=()=>tk[i],eat=()=>tk[i++];
+  function E(){let v=Tm();while(peek()==="+"||peek()==="-"){const o=eat(),r=Tm();v=o==="+"?v+r:v-r;}return v;}
+  function Tm(){let v=F();while(peek()==="*"||peek()==="/"){const o=eat(),r=F();v=o==="*"?v*r:v/r;}return v;}
+  function F(){ if(peek()==="("){eat();const v=E();if(peek()===")")eat();return v;}
+    if(peek()==="-"){eat();return -F();}
+    const n=parseFloat(eat());return isNaN(n)?0:n;}
+  const r=E(); return i<tk.length?NaN:r;
+}
+
+/* ---------- UI atomi ---------- */
+const Card=({children,style})=><div style={{background:T.surface,borderRadius:14,border:"1px solid "+T.line,padding:14,...style}}>{children}</div>;
+const Btn=({children,onClick,kind="primary",disabled,style})=>{
+  const s={primary:{background:T.brand,color:"#fff",border:"none"},
+           ghost:{background:T.surface,color:T.ink,border:"1px solid "+T.line},
+           danger:{background:"#fff",color:T.out,border:"1px solid "+T.out}}[kind];
+  return <button onClick={onClick} disabled={disabled} style={{...s,opacity:disabled?0.4:1,padding:"12px 14px",borderRadius:11,fontSize:15,fontWeight:600,width:"100%",...style}}>{children}</button>;
+};
+const Row=({l,r})=><div style={{display:"flex",justifyContent:"space-between",padding:"7px 0",fontSize:14}}><span>{l}</span><b style={{fontVariantNumeric:"tabular-nums"}}>{r}</b></div>;
+const H=({children})=><div style={{fontSize:11,letterSpacing:1.2,textTransform:"uppercase",color:T.muted,fontWeight:700,margin:"16px 0 7px"}}>{children}</div>;
+const sel2={width:"100%",padding:"11px 12px",borderRadius:10,border:"1px solid "+T.line,fontSize:16,background:"#fff",color:T.ink,boxSizing:"border-box"};
+
+// campo etichetta con freccia sempre visibile (il <datalist> nativo non mostra alcuna freccia su iOS)
+function EtichettaInput({value,onChange,options,placeholder}){
+  const [open,setOpen]=useState(false);
+  const wrapRef=useRef(null);
+  useEffect(()=>{
+    const onDoc=(e)=>{ if(wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown",onDoc); document.addEventListener("touchstart",onDoc);
+    return ()=>{ document.removeEventListener("mousedown",onDoc); document.removeEventListener("touchstart",onDoc); };
+  },[]);
+  const filtrate=(options||[]).filter(o=>!value || o.toLowerCase().includes(value.toLowerCase()));
+  return (
+    <div ref={wrapRef} style={{position:"relative"}}>
+      <div style={{display:"flex",alignItems:"center",border:"1px solid "+T.line,borderRadius:10,background:"#fff"}}>
+        <input placeholder={placeholder} value={value} onFocus={()=>setOpen(true)}
+          onChange={e=>onChange(e.target.value)}
+          style={{flex:1,border:"none",padding:"11px 10px",fontSize:16,borderRadius:10,background:"transparent",minWidth:0}} />
+        {options && options.length>0 && (
+          <button type="button" onClick={()=>setOpen(o=>!o)} aria-label="Etichette esistenti"
+            style={{background:"none",border:"none",padding:"0 11px",display:"flex",alignItems:"center",color:T.muted}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+              style={{transform:open?"rotate(180deg)":"none",transition:"transform .15s"}}><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+        )}
+      </div>
+      {open && filtrate.length>0 && (
+        <div style={{position:"absolute",left:0,right:0,top:"calc(100% + 4px)",background:"#fff",border:"1px solid "+T.line,borderRadius:10,
+          boxShadow:"0 6px 18px rgba(0,0,0,.14)",maxHeight:180,overflowY:"auto",zIndex:20}}>
+          {filtrate.map(o=>(
+            <button type="button" key={o} onClick={()=>{onChange(o);setOpen(false);}}
+              style={{display:"block",width:"100%",textAlign:"left",background:"none",border:"none",padding:"9px 12px",fontSize:14,borderBottom:"1px solid "+T.bg}}>{o}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+class Guard extends React.Component{
+  constructor(p){super(p);this.state={err:null};}
+  static getDerivedStateFromError(err){return {err};}
+  render(){ if(!this.state.err) return this.props.children;
+    return <div style={{padding:20}}>
+      <div style={{fontSize:17,fontWeight:800,marginBottom:8}}>Qualcosa si è rotto</div>
+      <div style={{fontSize:13.5,color:T.muted,marginBottom:12}}>I dati sono al sicuro su Firestore. Riapri l'app; se si ripete, segnalami il messaggio.</div>
+      <pre style={{fontSize:11,background:"#fff",padding:10,borderRadius:9,overflowX:"auto"}}>{String(this.state.err)}</pre>
+      <Btn onClick={()=>this.setState({err:null})}>Torna all'app</Btn>
+    </div>;}
+}
+
+/* ---------- condivisione file ---------- */
+function scaricaFile(blob,filename){
+  try{
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob); a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    return true;
+  }catch(e){ return false; }
+}
+function shareOrDownload(blob,filename,title,onFallback){
+  let file=null;
+  try{ file=new File([blob],filename,{type:blob.type}); }catch(e){}
+  const puoCondividere = file && navigator.canShare && navigator.canShare({files:[file]}) && navigator.share;
+  if(puoCondividere){
+    navigator.share({files:[file],title,text:title}).catch((err)=>{
+      // annullato dall'utente: non si riprova. Qualsiasi altro errore: si scarica.
+      if(err && err.name==="AbortError") return;
+      if(!scaricaFile(blob,filename) && onFallback) blob.text().then(onFallback).catch(()=>{});
+    });
+    return "share";
+  }
+  if(scaricaFile(blob,filename)) return "download";
+  if(onFallback) blob.text().then(onFallback).catch(()=>{});
+  return "fallback";
+}
+
+/* ============================================================
+   ROOT
+   ============================================================ */
+function App(){
+  const [fb,setFb]=useState(null);
+  const [fbErr,setFbErr]=useState(null);
+  const [authUser,setAuthUser]=useState(undefined); // undefined = in verifica
+  const [ready,setReady]=useState(false);
+
+  const [tx,setTx]=useState([]);
+  const [settlements,setSettlements]=useState([]);
+  const [balances,setBalances]=useState([]);
+  const [recurring,setRecurring]=useState([]);
+  const [recurringBanner,setRecurringBanner]=useState(null);
+  const [cats,setCats]=useState(null);
+  const [config,setConfig]=useState(null);
+  const [photo,setPhoto]=useState(null);
+  const [online,setOnline]=useState(navigator.onLine);
+
+  const [view,setView]=useState("home");
+  useEffect(()=>{ window.scrollTo(0,0); },[view]);  // ogni cambio di schermata riparte da in alto
+  const [editing,setEditing]=useState(null);
+  const [toast,setToast]=useState(null);
+  const [refreshing,setRefreshing]=useState(false);
+  const [homeScale,setHomeScale]=useState("mese");
+  const [homeSelKey,setHomeSelKey]=useState(null);
+  const [homeFocusId,setHomeFocusId]=useState(null);
+  const manualRefresh=async()=>{
+    if(refreshing||!fb||!ready) return;
+    setRefreshing(true);
+    try{
+      const s=await fb.getDocsFromServer(fb.collection(fb.db,"transactions"));
+      setTx(s.docs.map(d=>({id:d.id,pending:d.metadata.hasPendingWrites,...d.data()})));
+      say("Aggiornato dal server");
+    }catch(e){ say("Aggiornamento non riuscito: "+(e.code||e.message)); }
+    setTimeout(()=>setRefreshing(false),650);
+  };
+  const [backupText,setBackupText]=useState(null);
+  const [simLock,setSimLock]=useState(false);
+  const say=(m)=>{setToast(m);setTimeout(()=>setToast(null),2800);};
+  const [erroreGlobale,setErroreGlobale]=useState(null);
+  useEffect(()=>{
+    const onErr=(e)=>{ const msg=String((e.error&&e.error.message)||e.message||e);
+      if(/firestore|assertion/i.test(msg)) setErroreGlobale(msg); };
+    const onRej=(e)=>{ const msg=String((e.reason&&e.reason.message)||e.reason||"");
+      if(/firestore|assertion/i.test(msg)) setErroreGlobale(msg); };
+    window.addEventListener("error",onErr);
+    window.addEventListener("unhandledrejection",onRej);
+    return ()=>{ window.removeEventListener("error",onErr); window.removeEventListener("unhandledrejection",onRej); };
+  },[]);
+
+  useEffect(()=>{ window.fbReady.then(setFb).catch(e=>setFbErr(e)); },[]);
+  useEffect(()=>{ const on=()=>setOnline(true),off=()=>setOnline(false);
+    window.addEventListener("online",on); window.addEventListener("offline",off);
+    return ()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};},[]);
+  useEffect(()=>{ if(!fb) return;
+    return fb.onAuthStateChanged(fb.auth,(u)=>setAuthUser(u||null));
+  },[fb]);
+
+  const user = authUser ? UIDS[authUser.uid] : null;
+
+  // sottoscrizioni realtime
+  const unsubTxRef=useRef(null);
+  const attachTx=()=>{
+    if(!fb||!user) return;
+    if(unsubTxRef.current) return;      // gia' collegata
+    unsubTxRef.current=fb.onSnapshot(fb.collection(fb.db,"transactions"),(s)=>{
+      setTx(s.docs.map(d=>({id:d.id,pending:d.metadata.hasPendingWrites,...d.data()})));setReady(true);});
+  };
+  const detachTx=()=>{ if(unsubTxRef.current){ unsubTxRef.current(); unsubTxRef.current=null; } };
+
+  useEffect(()=>{
+    if(!fb||!user) return;
+    const db=fb.db;
+    const un=[];
+    attachTx();
+    un.push(fb.onSnapshot(fb.collection(db,"settlements"),(s)=>
+      setSettlements(s.docs.map(d=>({id:d.id,...d.data()})))));
+    un.push(fb.onSnapshot(fb.collection(db,"balances"),(s)=>
+      setBalances(s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>a.date.localeCompare(b.date)))));
+    un.push(fb.onSnapshot(fb.collection(db,"recurring"),(s)=>
+      setRecurring(s.docs.map(d=>({id:d.id,...d.data()})))));
+    un.push(fb.onSnapshot(fb.doc(db,"meta","categories"),async(d)=>{
+      if(d.exists()){ const c=d.data(); setCats({groups:c.groups||[],leaves:c.leaves||[],subs:c.subs||[]}); }
+      else { const c=buildCats(); setCats(c); fb.setDoc(fb.doc(db,"meta","categories"),c).catch(()=>{}); }
+    }));
+    un.push(fb.onSnapshot(fb.doc(db,"meta","photo"),(d)=>{
+      setPhoto(d.exists()?(d.data().dataUrl||null):null);}));
+    un.push(fb.onSnapshot(fb.doc(db,"meta","config"),async(d)=>{
+      if(d.exists()) setConfig(d.data());
+      else { const c={backupEmail:BACKUP_EMAIL_DEFAULT,lastBackup:"",lastBackupBy:""};
+        setConfig(c); fb.setDoc(fb.doc(db,"meta","config"),c).catch(()=>{}); }
+    }));
+    return ()=>{ detachTx(); un.forEach(f=>f&&f()); };
+  },[fb,user]);
+
+  const leafById=useMemo(()=>cats?Object.fromEntries(cats.leaves.map(l=>[l.id,l])):{},[cats]);
+  const groupById=useMemo(()=>cats?Object.fromEntries(cats.groups.map(g=>[g.id,g])):{},[cats]);
+  const subById=useMemo(()=>cats&&cats.subs?Object.fromEntries(cats.subs.map(x=>[x.id,x])):{},[cats]);
+  const meta=(t)=>{const lf=t.leafId?leafById[t.leafId]:null;
+    const g=groupById[t.groupId]||(lf&&groupById[lf.groupId]);
+    const sb=t.subId?subById[t.subId]:null;
+    return {leaf:lf,group:g,sub:sb};};
+
+  const balance=useMemo(()=>{
+    let b=0;
+    tx.forEach(t=>{const d=deltaFor(t); b+= t.createdBy==="pierangelo"?d:-d;});
+    settlements.forEach(s=>{ b += s.to==="pierangelo" ? -s.amount : s.amount; });
+    return b;
+  },[tx,settlements]);
+  const myBalance = user==="pierangelo" ? balance : -balance;
+  const etichette=useMemo(()=>[...new Set(tx.map(t=>(t.etichetta||"").trim()).filter(Boolean))].sort(),[tx]);
+
+  const mesecorrente=today().slice(0,8)+"01";
+  const locked = user==="pierangelo" && config &&
+    (simLock || !config.lastBackup || config.lastBackup < mesecorrente);
+
+  /* --- scritture --- */
+  // Offline le promesse di Firestore non si risolvono finche non risponde il server:
+  // si naviga subito, il dato e gia nella cache locale.
+  const saveTx=(t)=>{
+    const db=fb.db;
+    try{
+      if(t.id){ const {id,pending,...rest}=t;
+        const prev=tx.find(x=>x.id===id)||{};
+        fb.updateDoc(fb.doc(db,"transactions",id),
+          {...rest, editedBy: prev.createdBy!==user?user:(prev.editedBy||null), editedAt:fb.serverTimestamp()})
+          .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+        // torna alla schermata Spese gia' aperta sul mese/anno di questa riga, con la riga evidenziata
+        setHomeSelKey(homeScale==="anno" ? t.date.slice(0,4) : t.date.slice(0,7));
+        setHomeFocusId(id);
+        say("Movimento aggiornato");
+      } else {
+        const {id,pending,...rest}=t;
+        fb.addDoc(fb.collection(db,"transactions"),
+          {...rest,createdBy:user,editedBy:null,source:"manual",createdAt:fb.serverTimestamp()})
+          .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+        say("Movimento registrato");
+      }
+      setEditing(null);setView("home");
+    }catch(e){say("Errore nel salvataggio: "+(e.code||e.message));}
+  };
+  const delTx=(id)=>{
+    try{ fb.deleteDoc(fb.doc(fb.db,"transactions",id))
+        .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+      setEditing(null);setView("home");say("Movimento eliminato");
+    }catch(e){say("Errore: "+(e.code||e.message));}
+  };
+  // rinomina un'etichetta su tutti i movimenti che la usano (esclusa la riga in modifica, gia' salvata a parte)
+  const renameEtichetta=(oldLabel,newLabel,excludeId)=>{
+    const ids=tx.filter(t=>t.id!==excludeId && (t.etichetta||"").trim()===oldLabel).map(t=>t.id);
+    ids.forEach(id=>fb.updateDoc(fb.doc(fb.db,"transactions",id),{etichetta:newLabel})
+      .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message))));
+    say(ids.length ? ("Cambiate le etichette di "+(ids.length+1)+" movimenti") : "Etichetta cambiata");
+    return ids.length;
+  };
+
+  // spese ricorrenti: crea le occorrenze mancanti fino a oggi (tetto di 24 per regola ad ogni giro).
+  // gli identificativi sono prevedibili (regola+data), quindi generare due volte non duplica nulla:
+  // se apri l'app tu o Martina non importa, il risultato e' lo stesso.
+  useEffect(()=>{
+    if(!ready||!fb||!recurring.length) return;
+    const oggi=today();
+    const creati=[];
+    (async()=>{
+      for(const r of recurring){
+        let cursore = r.lastGenerated ? prossimaOccorrenza(r.lastGenerated,r.cadence) : r.startDate;
+        let conteggio=0, ultima=r.lastGenerated||null;
+        const batchIds=[];
+        while(cursore<=oggi && conteggio<24 && (!r.endDate || cursore<=r.endDate)){
+          const docId="rec_"+r.id+"_"+cursore.replace(/-/g,"");
+          batchIds.push({id:docId,date:cursore});
+          ultima=cursore; conteggio++;
+          cursore=prossimaOccorrenza(cursore,r.cadence);
+        }
+        if(!batchIds.length) continue;
+        for(const b of batchIds){
+          fb.setDoc(fb.doc(fb.db,"transactions",b.id),{
+            date:b.date,type:r.type,amount:r.amount,groupId:r.groupId,leafId:r.leafId||null,subId:r.subId||null,
+            note:r.note||"",etichetta:r.etichetta||"",shared:!!r.shared,splitMode:r.shared?r.splitMode:null,
+            splitPercent:r.splitPercent||50,createdBy:r.createdBy,editedBy:null,source:"recurring",
+            recurringRuleId:r.id,createdAt:fb.serverTimestamp()
+          }).catch(()=>{});
+          creati.push({label:r.note||"Spesa ricorrente",date:b.date,amount:r.amount});
+        }
+        fb.updateDoc(fb.doc(fb.db,"recurring",r.id),{lastGenerated:ultima}).catch(()=>{});
+      }
+      if(creati.length) setRecurringBanner(creati);
+    })();
+  },[ready,fb,recurring]);
+  const dismissBanner=()=>setRecurringBanner(null);
+
+  const saveCats=(c)=>{ setCats(c);
+    try{ fb.setDoc(fb.doc(fb.db,"meta","categories"),c)
+      .catch(e=>say("Sincronizzazione categorie non riuscita: "+(e.code||e.message)));
+    }catch(e){say("Errore categorie: "+(e.code||e.message));} };
+
+  const doBackup=async()=>{
+    const n=tx.length;
+    const fn="SPENDOMETRO_backup_"+today()+"_v1_"+n+"tx.json";
+    const senzaPending=(arr)=>arr.map(({pending,...r})=>r); // pending e stato UI, non un dato
+    const payload={schema:1,generato:new Date().toISOString(),da:user,
+      transactions:senzaPending(tx),settlements:senzaPending(settlements),
+      balances:senzaPending(balances),categories:cats,config};
+    const blob=new Blob([JSON.stringify(payload,null,1)],{type:"application/json"});
+    const testo=fn.replace(".json","")+"\n\nBackup Spendometro del "+today()+"\nMovimenti: "+n+
+      "\nPer ritrovarlo cerca in Gmail: SPENDOMETRO_backup";
+    const how=shareOrDownload(blob,fn,testo,(txt)=>setBackupText({fn,txt}));
+    try{ fb.updateDoc(fb.doc(fb.db,"meta","config"),{lastBackup:today(),lastBackupBy:user}).catch(()=>{}); }catch(e){}
+    setSimLock(false);
+    say(how==="fallback"?"Backup mostrato a schermo":(how==="download"?"Backup scaricato: "+fn:"Backup pronto"+(config?.backupEmail?": invialo a "+config.backupEmail:"")));
+  };
+
+  if(fbErr) return <div style={{padding:24}}><b>Firebase non raggiungibile.</b><pre style={{fontSize:11}}>{String(fbErr)}</pre></div>;
+  if(!fb||authUser===undefined) return <Splash msg="Avvio…" />;
+  if(!authUser) return <Login fb={fb} />;
+  if(!UIDS[authUser.uid]) return <Splash msg="Account non autorizzato." action={()=>fb.signOut(fb.auth)} />;
+  if(!ready||!cats||!config) return <Splash msg="Carico i dati…" />;
+
+  return (
+    <Guard>
+    <div style={{background:T.bg,minHeight:"100dvh"}}>
+      <div style={{maxWidth:480,margin:"0 auto",paddingBottom:(view==="add"||view==="recur")?24:(locked?16:96)}}>
+        <div style={{background:T.brand,position:"relative",overflow:"hidden"}}>
+          {photo && <img src={photo} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",opacity:0.9}} />}
+          {photo && <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(16,24,32,.55) 0%,rgba(16,24,32,.15) 45%,rgba(16,24,32,.65) 100%)"}} />}
+          <div style={{position:"relative",paddingTop:"calc(14px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:14,minHeight:photo?128:0,display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:photo?"0 1px 6px rgba(0,0,0,.5)":"none"}}>Spendometro</div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <button onClick={()=>fb.signOut(fb.auth)} style={{background:photo?"rgba(16,24,32,.55)":"#33547C",color:"#fff",border:"none",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600,backdropFilter:"blur(4px)"}}>{USERS[user]}</button>
+                <button onClick={manualRefresh} disabled={refreshing} aria-label="Aggiorna"
+                  style={{background:photo?"rgba(16,24,32,.55)":"#33547C",border:"none",width:32,height:32,borderRadius:16,padding:0,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)",flex:"0 0 auto"}}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+                    style={{display:"block",transition:"transform .6s linear",transform:refreshing?"rotate(360deg)":"rotate(0deg)"}}>
+                    <path d="M20 11a8 8 0 1 0-2.3 5.7"/>
+                    <path d="M20 5v6h-6"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {locked ? <BackupLock onBackup={doBackup} config={config} /> : (
+          <div style={{padding:"0 14px"}}>
+            {view==="home" && <Home {...{tx,user,meta,myBalance,fb,settlements,say,setEditing,setView,etichette,cats,
+              recurring,recurringBanner,dismissBanner,
+              scale:homeScale,setScale:setHomeScale,selKey:homeSelKey,setSelKey:setHomeSelKey,
+              focusId:homeFocusId,clearFocus:()=>setHomeFocusId(null)}} />}
+            {view==="add" && <AddEdit {...{cats,user,initial:editing,etichette,tx,renameEtichetta,say,onSave:saveTx,onDelete:delTx,onCancel:()=>{setEditing(null);setView("home");}}} />}
+            {view==="recur" && <RecurringForm {...{cats,user,fb,say,onCancel:()=>setView("home")}} />}
+            {view==="report" && <Report {...{tx,user,meta,balances,fb,say,cats}} />}
+            {view==="cats" && <CatsView {...{cats,saveCats,tx,say}} />}
+            {view==="data" && <SchermataDati {...{tx,cats,meta,user,fb,doBackup,config,photo,setSimLock,say,detachTx,attachTx}} />}
+          </div>
+        )}
+
+        {erroreGlobale && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.55)",zIndex:97,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+            <Card style={{maxWidth:380}}>
+              <div style={{fontSize:16,fontWeight:800,marginBottom:8}}>Firestore ha segnalato un problema interno</div>
+              <div style={{fontSize:13,color:T.muted,lineHeight:1.5,marginBottom:10}}>Nessun dato e' andato perso: e' un errore del canale di comunicazione, non del database. Ricarica la pagina.</div>
+              <pre style={{fontSize:10,background:T.bg,padding:8,borderRadius:8,overflowX:"auto",maxHeight:120}}>{erroreGlobale}</pre>
+              <div style={{marginTop:10}}><Btn onClick={()=>location.reload()}>Ricarica l'app</Btn></div>
+            </Card>
+          </div>
+        )}
+        {toast && <div style={{position:"fixed",bottom:100,left:"50%",transform:"translateX(-50%)",background:T.ink,color:"#fff",padding:"10px 16px",borderRadius:10,fontSize:13,zIndex:99,maxWidth:360,textAlign:"center"}}>{toast}</div>}
+        {backupText && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:95,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+            <Card style={{maxWidth:420,width:"100%"}}>
+              <div style={{fontSize:14,fontWeight:700}}>{backupText.fn}</div>
+              <div style={{fontSize:12,color:T.muted,margin:"4px 0 8px"}}>Copia il testo e salvalo, oppure riprova dal telefono.</div>
+              <textarea readOnly value={backupText.txt} style={{width:"100%",height:160,fontSize:10,fontFamily:"monospace",borderRadius:8,border:"1px solid "+T.line,padding:8,boxSizing:"border-box"}} />
+              <div style={{marginTop:8}}><Btn onClick={()=>setBackupText(null)}>Chiudi</Btn></div>
+            </Card>
+          </div>
+        )}
+      </div>
+      {!locked && view!=="add" && view!=="recur" && (
+          <div id="barra" style={{background:T.surface,borderTop:"1px solid "+T.line,display:"flex",maxWidth:480,margin:"0 auto",width:"100%"}}>
+            {NAV.map(([k,l,Icon])=>(
+              <button key={k} onClick={()=>setView(k)} style={{flex:1,background:"none",border:"none",padding:"10px 4px 8px",display:"flex",flexDirection:"column",alignItems:"center",gap:3,color:view===k?T.brand:T.muted}}>
+                <Icon/>
+                <span style={{fontSize:11,fontWeight:700}}>{l}</span>
+              </button>
+            ))}
+            <button onClick={()=>{setEditing(null);setView("add");}} style={{position:"absolute",right:12,top:-46,width:56,height:56,borderRadius:28,background:T.brand,color:"#fff",border:"3px solid "+T.bg,fontSize:30,lineHeight:1,padding:0,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 3px 12px rgba(0,0,0,.22)"}}><span style={{display:"block",marginTop:-2}}>+</span></button>
+          </div>
+        )}
+
+        {!online && <div style={{position:"fixed",top:0,left:0,right:0,background:"#B8860B",color:"#fff",fontSize:12,fontWeight:700,textAlign:"center",paddingTop:"calc(5px + env(safe-area-inset-top))",paddingBottom:5,paddingLeft:8,paddingRight:8,zIndex:98,boxSizing:"border-box"}}>Offline · le modifiche si sincronizzano al ritorno della rete</div>}
+    </div>
+    </Guard>
+  );
+}
+// icone di navigazione: linea monocroma, ereditano il colore del pulsante (currentColor)
+const IconCart=()=><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.5 3h2l2.4 12.2a2 2 0 0 0 2 1.6h8.6a2 2 0 0 0 2-1.6L21 7H6"/></svg>;
+const IconChart=()=><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10M12 20V4M20 20v-7"/></svg>;
+const IconTag=()=><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M20.6 12.6 12.4 20.8a2 2 0 0 1-2.8 0l-7.4-7.4a2 2 0 0 1 0-2.8L10.4 2.4A2 2 0 0 1 11.8 2H19a2 2 0 0 1 2 2v7.2a2 2 0 0 1-.4 1.4Z"/><circle cx="15.5" cy="8.5" r="1.2" fill="currentColor" stroke="none"/></svg>;
+const IconGear=()=><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5a7.9 7.9 0 0 0 0-3l1.9-1.5-2-3.4-2.3.7a7.7 7.7 0 0 0-2.6-1.5L14 2h-4l-.4 2.4a7.7 7.7 0 0 0-2.6 1.5l-2.3-.7-2 3.4L4.6 10a7.9 7.9 0 0 0 0 3l-1.9 1.5 2 3.4 2.3-.7c.75.66 1.63 1.17 2.6 1.5L10 22h4l.4-2.4a7.7 7.7 0 0 0 2.6-1.5l2.3.7 2-3.4Z"/></svg>;
+const NAV=[["home","Spese",IconCart],["report","Report",IconChart],["cats","Categorie",IconTag],["data","Impostazioni",IconGear]];
+
+const Splash=({msg,action})=>(
+  <div style={{background:T.brand,minHeight:"100vh",display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",color:"#fff",paddingTop:"calc(24px + env(safe-area-inset-top))",paddingLeft:24,paddingRight:24,paddingBottom:24,boxSizing:"border-box"}}>
+    <div style={{fontSize:34,fontWeight:800,letterSpacing:-1.2}}>Spendometro</div>
+    <div style={{color:"#9DB4CE",fontSize:14,marginTop:8}}>{msg}</div>
+    {action && <div style={{marginTop:18,width:200}}><Btn kind="ghost" onClick={action}>Esci</Btn></div>}
+  </div>
+);
+
+/* ---------- Login ---------- */
+function Login({fb}){
+  const [email,setEmail]=useState(""),[pw,setPw]=useState("");
+  const [err,setErr]=useState(""),[busy,setBusy]=useState(false);
+  const go=async()=>{
+    setBusy(true);setErr("");
+    try{ await fb.signInWithEmailAndPassword(fb.auth,email.trim(),pw); }
+    catch(e){ setErr(e.code==="auth/invalid-credential"?"Email o password non corretti":e.code); }
+    setBusy(false);
+  };
+  return (
+    <div style={{background:T.brand,minHeight:"100vh",display:"flex",flexDirection:"column",justifyContent:"center",paddingTop:"calc(26px + env(safe-area-inset-top))",paddingLeft:26,paddingRight:26,paddingBottom:26,boxSizing:"border-box"}}>
+      <div style={{color:"#fff",fontSize:38,fontWeight:800,letterSpacing:-1.4}}>Spendometro</div>
+      <div style={{color:"#9DB4CE",fontSize:14,marginBottom:28}}>Dipartimento contabile del PMAS</div>
+      <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} type="email" autoComplete="username" style={{...sel2,marginBottom:9}} />
+      <input placeholder="Password" value={pw} onChange={e=>setPw(e.target.value)} type="password" autoComplete="current-password"
+        onKeyDown={e=>e.key==="Enter"&&go()} style={{...sel2,marginBottom:12}} />
+      {err && <div style={{color:"#FFC9C0",fontSize:13,marginBottom:10}}>{err}</div>}
+      <Btn onClick={go} disabled={busy||!email||!pw} style={{background:"#fff",color:T.brand}}>{busy?"Accesso…":"Entra"}</Btn>
+      <button onClick={async()=>{ if(!email) return setErr("Scrivi prima l'email");
+          try{ await fb.sendPasswordResetEmail(fb.auth,email.trim()); setErr("Email di reimpostazione inviata"); }catch(e){setErr(e.code);} }}
+        style={{background:"none",border:"none",color:"#9DB4CE",fontSize:12.5,marginTop:16}}>Password dimenticata</button>
+      <div style={{color:"#7B96B4",fontSize:11.5,marginTop:18,lineHeight:1.5}}>L'accesso si fa una volta sola. Aggiungi l'app alla schermata Home per mantenere la sessione.</div>
+    </div>
+  );
+}
+
+/* ---------- Blocco backup ---------- */
+function BackupLock({onBackup,config}){
+  return (
+    <div style={{padding:20,paddingTop:"calc(20px + env(safe-area-inset-top))"}}>
+      <Card style={{background:T.warnSoft,borderColor:"#E8D9A8"}}>
+        <div style={{fontSize:17,fontWeight:800,marginBottom:6}}>Backup del mese richiesto</div>
+        <div style={{fontSize:13.5,lineHeight:1.55,color:"#5C4A16"}}>
+          L'app resta bloccata finché non salvi il backup. Ultimo backup: <b>{config.lastBackup||"mai"}</b>.
+          Premi il pulsante, scegli Mail e invialo alla tua email.
+        </div>
+        <div style={{marginTop:14}}><Btn onClick={onBackup}>Backup database</Btn></div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------- Home ---------- */
+/* ---------- card spese ricorrenti (mostrata in Spese, sotto il conguaglio) ---------- */
+function RecurringCard({recurring,cats,user,fb,say,setView}){
+  const [sel,setSel]=useState(new Set());
+  const [confirmDel,setConfirmDel]=useState(false);
+  const meta1=(r)=>{ const lf=cats.leaves.find(x=>x.id===r.leafId); const g=cats.groups.find(x=>x.id===r.groupId); return {leaf:lf,group:g}; };
+  const toggle=(id)=>setSel(s=>{const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n;});
+  const elimina=()=>{
+    [...sel].forEach(id=>fb.deleteDoc(fb.doc(fb.db,"recurring",id)).catch(e=>say("Errore: "+(e.code||e.message))));
+    say((sel.size>1?"Eliminate "+sel.size+" regole":"Regola eliminata")+". Le spese già create restano.");
+    setSel(new Set()); setConfirmDel(false);
+  };
+  return (
+    <Card style={{marginTop:10}}>
+      <div style={{fontSize:11.5,color:T.muted,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Spese ricorrenti</div>
+      {recurring.length===0 ? (
+        <div style={{fontSize:13.5,color:T.muted,marginBottom:10}}>Nessuna regola attiva. Utile per abbonamenti e bollette che tornano sempre uguali.</div>
+      ) : (
+        <div style={{maxHeight:150,overflowY:"auto",marginBottom:10}}>
+          {recurring.map(r=>{
+            const {leaf,group}=meta1(r);
+            return (
+              <div key={r.id} onClick={()=>toggle(r.id)} style={{display:"flex",alignItems:"center",gap:9,padding:"7px 2px",borderBottom:"1px solid "+T.line,cursor:"pointer"}}>
+                <div style={{width:18,height:18,borderRadius:5,border:"2px solid "+(sel.has(r.id)?T.brand:T.line),background:sel.has(r.id)?T.brand:"#fff",flex:"0 0 auto",color:"#fff",fontSize:12,lineHeight:"15px",textAlign:"center"}}>{sel.has(r.id)?"✓":""}</div>
+                <div style={{fontSize:17}}>{group?group.icon:"📌"}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13.5,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{leaf?leaf.name:(group?group.name:"?")}{r.note?" · "+r.note:""}</div>
+                  <div style={{fontSize:11,color:T.muted}}>{cadenzaTesto(r)}{r.endDate?" · fino al "+r.endDate.slice(8,10)+"/"+r.endDate.slice(5,7)+"/"+r.endDate.slice(0,4):""}</div>
+                </div>
+                <div style={{fontWeight:700,fontSize:13.5,color:r.type==="income"?T.in:T.out,fontVariantNumeric:"tabular-nums"}}>{r.type==="income"?"+":"−"}{eur(r.amount).slice(1)}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {sel.size>0 ? (
+        <Btn kind="danger" onClick={()=>setConfirmDel(true)}>Elimina {sel.size>1?sel.size+" regole":"regola"}</Btn>
+      ) : (
+        <Btn kind="ghost" onClick={()=>setView("recur")}>+ Aggiungi spesa ricorrente</Btn>
+      )}
+      {confirmDel && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:22,zIndex:90}}>
+          <Card style={{maxWidth:340}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Eliminare {sel.size>1?"queste "+sel.size+" regole":"questa regola"}?</div>
+            <div style={{fontSize:14,lineHeight:1.5,marginBottom:16}}>Le spese già registrate in passato restano invariate. Solo la generazione futura si ferma.</div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn kind="ghost" onClick={()=>setConfirmDel(false)}>Annulla</Btn>
+              <Btn kind="danger" onClick={elimina}>Elimina</Btn>
+            </div>
+          </Card>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Home({tx,user,meta,myBalance,fb,settlements,say,setEditing,setView,etichette,cats,
+               recurring,recurringBanner,dismissBanner,
+               scale,setScale,selKey,setSelKey,focusId,clearFocus}){
+  const [confirm,setConfirm]=useState(false);
+  const [sel,setSel]=useState(null);          // null = modalita normale, Set = selezione (etichetta)
+  const [selDel,setSelDel]=useState(null);    // null = modalita normale, Set = selezione (eliminazione)
+  const [confirmDelSel,setConfirmDelSel]=useState(false);
+  const [nuovaEt,setNuovaEt]=useState("");
+  const [busyEt,setBusyEt]=useState(false);
+  const [highlightId,setHighlightId]=useState(null);
+  const rowRefs=useRef({});
+  const scroller=useRef(null);
+  const mine=useMemo(()=>tx.map(t=>({t,q:shareFor(t,user)})).filter(x=>x.q>0.0001),[tx,user]);
+  const key=(d)=>scale==="mese"?d.slice(0,7):d.slice(0,4);
+  const buckets=useMemo(()=>{
+    const m={};
+    mine.forEach(({t,q})=>{const k=key(t.date);m[k]=m[k]||{k,in:0,out:0};
+      if(t.type==="income")m[k].in+=q;else m[k].out+=q;});
+    return Object.values(m).sort((a,b)=>a.k.localeCompare(b.k));
+  },[mine,scale]);
+  // quando cambia scala (mese/anno) o i bucket, se il periodo selezionato non esiste piu' si torna all'ultimo
+  useEffect(()=>{
+    if(!buckets.length) return;
+    if(!buckets.some(b=>b.k===selKey)) setSelKey(buckets[buckets.length-1].k);
+  },[buckets]);
+  const cur=buckets.find(b=>b.k===selKey) || buckets[buckets.length-1] || {k:today().slice(0,7),in:0,out:0};
+  const label=(k)=>scale==="mese"?MESI[+k.slice(5,7)-1]+" "+k.slice(2,4):k;
+  // l'elenco mostra SOLO il periodo selezionato: tutto lo storico e' cosi' raggiungibile scorrendo il grafico
+  const recent=useMemo(()=>mine.filter(x=>key(x.t.date)===cur.k).sort((a,b)=>b.t.date.localeCompare(a.t.date)),[mine,cur.k,scale]);
+
+  const [visMax,setVisMax]=useState(1);
+  const recalc=()=>{const el=scroller.current;if(!el||!buckets.length)return;
+    const item=el.scrollWidth/buckets.length;
+    const a=Math.max(0,Math.floor(el.scrollLeft/item));
+    const b=Math.min(buckets.length,Math.ceil((el.scrollLeft+el.clientWidth)/item));
+    const w=buckets.slice(a,Math.max(a+1,b));
+    setVisMax(Math.max(1,...w.map(x=>Math.max(x.in,x.out))));};
+  useEffect(()=>{ if(scroller.current){scroller.current.scrollLeft=scroller.current.scrollWidth;}
+    const id=setTimeout(recalc,60); return ()=>clearTimeout(id);},[buckets,scale]);
+  const max=visMax;
+  const iOwe=myBalance<-0.005;
+
+  // torna sulla riga appena modificata: scorre fino a lei e la evidenzia per un istante.
+  // "clearFocus" avvisa il padre che puo' dimenticare focusId: farlo troppo presto pero'
+  // fa ripartire QUESTO effetto, la cui pulizia annullerebbe i timer gia' programmati.
+  // Per questo clearFocus si chiama DOPO che lo scorrimento e' gia' partito, non prima.
+  useEffect(()=>{
+    if(!focusId) return;
+    const id=focusId;
+    if(recent.some(x=>x.t.id===id)){
+      setHighlightId(id);
+      setTimeout(()=>{
+        const el=rowRefs.current[id]; if(el) el.scrollIntoView({block:"center",behavior:"smooth"});
+        clearFocus();
+      },80);
+    } else {
+      clearFocus();
+    }
+  },[focusId]);
+  // il timer che spegne l'evidenziazione e' un effetto a parte, legato solo a highlightId:
+  // cosi' non viene mai annullato dal cambio di focusId qui sopra.
+  useEffect(()=>{
+    if(!highlightId) return;
+    const t=setTimeout(()=>setHighlightId(null),1800);
+    return ()=>clearTimeout(t);
+  },[highlightId]);
+
+  const applica=(et)=>{
+    setBusyEt(true);
+    const ids=[...sel];
+    ids.forEach(id=>{
+      fb.updateDoc(fb.doc(fb.db,"transactions",id),{etichetta:et})
+        .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+    });
+    setBusyEt(false); setSel(null); setNuovaEt("");
+    say(et?("Etichetta \""+et+"\" applicata a "+ids.length):"Etichetta rimossa da "+ids.length);
+  };
+
+  const eliminaSelezionati=()=>{
+    const ids=[...selDel];
+    ids.forEach(id=>fb.deleteDoc(fb.doc(fb.db,"transactions",id)).catch(e=>say("Errore: "+(e.code||e.message))));
+    say("Eliminati "+ids.length+" movimenti");
+    setSelDel(null); setConfirmDelSel(false);
+  };
+
+  const settle=()=>{
+    try{ fb.addDoc(fb.collection(fb.db,"settlements"),
+      {date:today(),amount:Math.round(Math.abs(myBalance)*100)/100,from:user,to:other(user),createdAt:fb.serverTimestamp()})
+      .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+      setConfirm(false); say("Conguaglio registrato");
+    }catch(e){ say("Errore: "+(e.code||e.message)); }
+  };
+
+  return (<>
+    {recurringBanner && recurringBanner.length>0 && (
+      <Card style={{marginTop:14,background:T.warnSoft,borderColor:"#E8D9A8"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+          <div style={{fontSize:13.5,fontWeight:700,color:"#5C4A16"}}>Aggiunte {recurringBanner.length} spese ricorrenti</div>
+          <button onClick={dismissBanner} style={{background:"none",border:"none",color:"#5C4A16",fontSize:15,padding:0}}>✕</button>
+        </div>
+        <div style={{marginTop:6}}>
+          {recurringBanner.slice(0,10).map((c,i)=>(
+            <div key={i} style={{fontSize:12.5,color:"#5C4A16"}}>· {c.label} · {c.date.slice(8,10)}/{c.date.slice(5,7)} · {eur(c.amount)}</div>
+          ))}
+          {recurringBanner.length>10 && <div style={{fontSize:12.5,color:"#5C4A16"}}>… e altre {recurringBanner.length-10}</div>}
+        </div>
+      </Card>
+    )}
+
+    <div style={{display:"flex",gap:6,margin:"14px 0 10px"}}>
+      {["mese","anno"].map(s=>(
+        <button key={s} onClick={()=>setScale(s)} style={{flex:1,padding:9,borderRadius:9,border:"1px solid "+(scale===s?T.brand:T.line),background:scale===s?T.brandSoft:T.surface,color:scale===s?T.brand:T.muted,fontWeight:700,fontSize:13}}>Per {s}</button>
+      ))}
+    </div>
+
+    <Card>
+      <div style={{fontSize:11.5,color:T.muted,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Flusso di cassa · {label(cur.k)}</div>
+      <div style={{fontSize:34,fontWeight:800,letterSpacing:-1.4,margin:"6px 0 2px",color:cur.in-cur.out>=0?T.in:T.out,fontVariantNumeric:"tabular-nums"}}>{eur(cur.in-cur.out)}</div>
+      <div style={{display:"flex",gap:18,fontSize:13,color:T.muted}}>
+        <span>Entrate <b style={{color:T.in}}>{eur(cur.in)}</b></span>
+        <span>Uscite <b style={{color:T.out}}>{eur(cur.out)}</b></span>
+      </div>
+    </Card>
+
+    <Card style={{marginTop:10}}>
+      {Math.abs(myBalance)<0.005 ? <div style={{fontSize:14,color:T.muted}}>Nessun debito aperto con {USERS[other(user)]}.</div> : (
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{flex:1,fontSize:14}}>
+            {iOwe?<>Devi a <b>{USERS[other(user)]}</b></>:<><b>{USERS[other(user)]}</b> ti deve</>}
+            <div style={{fontSize:21,fontWeight:800,color:iOwe?T.out:T.in,fontVariantNumeric:"tabular-nums"}}>{eur(Math.abs(myBalance))}</div>
+          </div>
+          <Btn kind={iOwe?"primary":"ghost"} disabled={!iOwe} onClick={()=>setConfirm(true)} style={{width:"auto",padding:"10px 16px"}}>Conguaglio</Btn>
+        </div>
+      )}
+    </Card>
+
+    <RecurringCard {...{recurring,cats,user,fb,say,setView}} />
+
+    {confirm && (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:22,zIndex:90}}>
+        <Card style={{maxWidth:340}}>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Conferma conguaglio</div>
+          <div style={{fontSize:14.5,lineHeight:1.5,marginBottom:16}}>Hai fatto bonifico di <b>{eur(Math.abs(myBalance))}</b> a <b>{USERS[other(user)]}</b>?</div>
+          <div style={{display:"flex",gap:8}}>
+            <Btn kind="ghost" onClick={()=>setConfirm(false)}>No</Btn>
+            <Btn onClick={settle}>Sì, conguaglia</Btn>
+          </div>
+        </Card>
+      </div>
+    )}
+
+    <H>Andamento {scale==="mese"?"mensile":"annuale"}</H>
+    <Card style={{padding:"14px 10px"}}>
+      <div style={{display:"flex"}}>
+        <div style={{flex:"0 0 auto",width:46,height:110,position:"relative",marginRight:4}}>
+          {[1,0.5,0].map(f=><div key={f} style={{position:"absolute",right:0,top:(1-f)*110-6,fontSize:9.5,color:T.muted,fontVariantNumeric:"tabular-nums"}}>{eur0(max*f)}</div>)}
+        </div>
+        <div ref={scroller} onScroll={recalc} style={{overflowX:"auto",display:"flex",gap:12,alignItems:"flex-end",paddingBottom:6,flex:1,borderLeft:"1px solid "+T.line,paddingLeft:8}}>
+          {buckets.map(b=>{
+            const attivo=b.k===cur.k;
+            return (
+            <button key={b.k} onClick={()=>setSelKey(b.k)} style={{flex:"0 0 auto",textAlign:"center",width:44,background:attivo?T.brandSoft:"none",border:"none",borderRadius:8,padding:"4px 0 2px"}}>
+              <div style={{display:"flex",gap:3,alignItems:"flex-end",justifyContent:"center",height:110}}>
+                <div style={{width:15,height:Math.max(2,Math.min(110,(b.in/max)*110)),background:T.in,borderRadius:"3px 3px 0 0",opacity:attivo?1:.55}} />
+                <div style={{width:15,height:Math.max(2,Math.min(110,(b.out/max)*110)),background:T.out,borderRadius:"3px 3px 0 0",opacity:attivo?1:.55}} />
+              </div>
+              <div style={{fontSize:10,color:attivo?T.brand:T.muted,marginTop:5,fontWeight:attivo?800:600}}>{label(b.k)}</div>
+            </button>
+          );})}
+        </div>
+      </div>
+      <div style={{fontSize:11,color:T.muted,marginTop:4,textAlign:"center"}}>Scorri e tocca un periodo per vederne i movimenti · verde entrate, rosso uscite</div>
+    </Card>
+
+    <div style={{margin:"16px 0 7px"}}>
+      <div style={{fontSize:11,letterSpacing:1.2,textTransform:"uppercase",color:T.muted,fontWeight:700,marginBottom:7}}>{label(cur.k)} · solo la tua quota</div>
+      <div style={{display:"flex",gap:6}}>
+        <button onClick={()=>{setSel(sel?null:new Set());setNuovaEt("");setSelDel(null);}}
+          style={{flex:1,background:sel?T.brand:T.surface,color:sel?"#fff":T.brand,border:"1px solid "+T.brand,
+          borderRadius:16,padding:"6px 8px",fontSize:12,fontWeight:700}}>{sel?"Annulla":"Applica etichetta"}</button>
+        <button onClick={()=>{setSelDel(selDel?null:new Set());setSel(null);}}
+          style={{flex:1,background:selDel?T.out:T.surface,color:selDel?"#fff":T.out,border:"1px solid "+T.out,
+          borderRadius:16,padding:"6px 8px",fontSize:12,fontWeight:700}}>{selDel?"Annulla":"Cancella spese"}</button>
+      </div>
+    </div>
+    {sel && (
+      <Card style={{marginBottom:8,background:"#F3EFF9",borderColor:"#D8CCEA"}}>
+        <div style={{fontSize:13,marginBottom:8}}>Tocca i movimenti da etichettare. Selezionati: <b>{sel.size}</b></div>
+        <EtichettaInput value={nuovaEt} onChange={setNuovaEt} options={etichette} placeholder="Etichetta nuova o esistente" />
+        <div style={{display:"flex",gap:8,marginTop:9}}>
+          <Btn kind="ghost" disabled={!sel.size||busyEt} onClick={()=>applica("")}>Togli etichetta</Btn>
+          <Btn disabled={!sel.size||!nuovaEt.trim()||busyEt} onClick={()=>applica(nuovaEt.trim())}>
+            {busyEt?"Applico…":"Applica a "+sel.size}</Btn>
+        </div>
+      </Card>
+    )}
+    {selDel && (
+      <Card style={{marginBottom:8,background:"#FBEAE6",borderColor:"#F0C4B8"}}>
+        <div style={{fontSize:13,marginBottom:8}}>Tocca i movimenti da eliminare. Selezionati: <b>{selDel.size}</b></div>
+        <Btn kind="danger" disabled={!selDel.size} onClick={()=>setConfirmDelSel(true)}>Elimina {selDel.size||""} movimenti</Btn>
+      </Card>
+    )}
+    {confirmDelSel && (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:22,zIndex:90}}>
+        <Card style={{maxWidth:340}}>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Eliminare {selDel.size} movimenti?</div>
+          <div style={{fontSize:14,lineHeight:1.5,marginBottom:16}}>L'operazione non si può annullare.</div>
+          <div style={{display:"flex",gap:8}}>
+            <Btn kind="ghost" onClick={()=>setConfirmDelSel(false)}>Annulla</Btn>
+            <Btn kind="danger" onClick={eliminaSelezionati}>Elimina</Btn>
+          </div>
+        </Card>
+      </div>
+    )}
+    <Card style={{padding:"4px 14px"}}>
+      {recent.length===0 && <div style={{padding:"14px 0",fontSize:13.5,color:T.muted}}>Nessun movimento in {label(cur.k)}.</div>}
+      {recent.map(({t,q},i)=>{
+        const {leaf,group,sub}=meta(t);
+        const k=key(t.date), prev=i>0?key(recent[i-1].t.date):null, head=k!==prev;
+        const titolo=scale==="mese"?MESILUNGHI[+k.slice(5,7)-1]+" "+k.slice(0,4):k;
+        return (<React.Fragment key={t.id}>
+          {head && <div style={{position:"sticky",top:-1,background:T.surface,padding:"10px 0 6px",borderBottom:"2px solid "+T.brand,marginTop:i?10:0,zIndex:2}}>
+            <span style={{fontSize:12.5,fontWeight:800,letterSpacing:.6,textTransform:"uppercase",color:T.brand}}>{titolo}</span></div>}
+          <div ref={el=>{rowRefs.current[t.id]=el;}}
+            onClick={()=>{
+              if(selDel){ const n=new Set(selDel); n.has(t.id)?n.delete(t.id):n.add(t.id); setSelDel(n); return; }
+              if(sel){ const n=new Set(sel); n.has(t.id)?n.delete(t.id):n.add(t.id); setSel(n); return; }
+              setEditing(t); setView("add");
+            }}
+            style={{display:"flex",gap:10,alignItems:"center",padding:"10px 0",borderBottom:"1px solid "+T.line,
+            background:highlightId===t.id?T.brandSoft:(selDel&&selDel.has(t.id)?"#FBEAE6":(sel&&sel.has(t.id)?"#F3EFF9":"transparent")),
+            transition:"background .5s ease"}}>
+            {selDel && <div style={{width:20,height:20,borderRadius:5,border:"2px solid "+(selDel.has(t.id)?T.out:T.line),
+              background:selDel.has(t.id)?T.out:"#fff",color:"#fff",fontSize:13,lineHeight:"17px",textAlign:"center",flex:"0 0 auto"}}>{selDel.has(t.id)?"✓":""}</div>}
+            {sel && <div style={{width:20,height:20,borderRadius:5,border:"2px solid "+(sel.has(t.id)?"#7A5AA8":T.line),
+              background:sel.has(t.id)?"#7A5AA8":"#fff",color:"#fff",fontSize:13,lineHeight:"17px",textAlign:"center",flex:"0 0 auto"}}>{sel.has(t.id)?"✓":""}</div>}
+            <div style={{fontSize:20}}>{group?group.icon:"📌"}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                {sub?sub.name:(leaf?leaf.name:(group?group.name:"?"))}{t.note?<span style={{color:T.muted,fontWeight:400}}> · {t.note}</span>:null}</div>
+              <div style={{fontSize:11.5,color:T.muted}}>
+                {t.date.slice(8,10)}/{t.date.slice(5,7)} · {group?group.name:""}{sub&&leaf?" · "+leaf.name:""} · {L2LABEL[group?group.l2:""]}
+                {t.shared&&<span style={{color:T.brand,fontWeight:700}}> · {condivisioneTesto(t)}</span>}
+                {t.createdBy!==user&&<span> · da {USERS[t.createdBy]}</span>}
+                {t.editedBy&&<span> · mod. {USERS[t.editedBy]}</span>}
+              </div>
+              {t.etichetta&&<div style={{fontSize:11.5,color:"#7A5AA8",fontWeight:700}}>{t.etichetta}</div>}
+              {t.pending&&<div style={{fontSize:11.5,color:"#B8860B",fontWeight:700}}>in attesa</div>}
+            </div>
+            <div style={{fontWeight:700,fontSize:14.5,color:t.type==="income"?T.in:T.out,fontVariantNumeric:"tabular-nums"}}>{t.type==="income"?"+":"−"}{eur(q).slice(1)}</div>
+          </div>
+        </React.Fragment>);
+      })}
+    </Card>
+  </>);
+}
+
+/* ---------- Inserimento / modifica ---------- */
+function AddEdit({cats,user,initial,onSave,onDelete,onCancel,etichette,tx,renameEtichetta,say}){
+  // chi ha creato la spesa e' un fatto fisso: usarlo come ancora, non chi sta guardando lo
+  // schermo in questo momento, altrimenti "pagato da me" cambia significato a seconda di chi legge.
+  const payer=initial?initial.createdBy:user;
+  const o=other(payer);
+  const [kind,setKind]=useState(initial?(initial.shared?(initial.type==="income"?"ic":"ec"):(initial.type==="income"?"i":"e")):"e");
+  const [expr,setExpr]=useState(initial?String(initial.amount):"");
+  const [mode,setMode]=useState(initial?.splitMode||"paid_by_me_split");
+  const [pct,setPct]=useState(initial?.splitPercent||50);
+  const [date,setDate]=useState(initial?.date||today());
+  const [note,setNote]=useState(initial?.note||"");
+  const [leafId,setLeafId]=useState(initial?.leafId||null);
+  const [subId,setSubId]=useState(initial?.subId||null);
+  const [etichetta,setEtichetta]=useState(initial?.etichetta||"");
+  const [confirmRename,setConfirmRename]=useState(false);
+  const [busy,setBusy]=useState(false);
+
+  const shared=kind==="ec"||kind==="ic";
+  const type=(kind==="i"||kind==="ic")?"income":"expense";
+  const l1=type==="income"?"entrate":"spese";
+  const [l2,setL2]=useState(()=>{
+    if(initial){ const g=cats.groups.find(x=>x.id===initial.groupId)
+        ||(initial.leafId?cats.groups.find(x=>x.id===(cats.leaves.find(y=>y.id===initial.leafId)||{}).groupId):null);
+      if(g) return g.l2; return initial.type==="income"?"stipendio":"variabili"; }
+    return "variabili";});
+  const [gid,setGid]=useState(()=>{
+    if(!initial) return null;
+    if(initial.groupId&&cats.groups.some(g=>g.id===initial.groupId)) return initial.groupId;
+    const lf=cats.leaves.find(x=>x.id===initial.leafId); return lf?lf.groupId:null;});
+  const first=useRef(true);
+  useEffect(()=>{ if(first.current){first.current=false;return;}
+    if(l1==="entrate"&&(l2==="fisse"||l2==="variabili")){setL2("stipendio");setGid(null);setLeafId(null);}
+    if(l1==="spese"&&(l2==="stipendio"||l2==="altre_entrate")){setL2("variabili");setGid(null);setLeafId(null);}
+  },[l1]);
+
+  const groups=cats.groups.filter(g=>g.l2===l2&&!g.archived);
+  const leaves=cats.leaves.filter(l=>l.groupId===gid&&!l.archived);
+  const subs=(cats.subs||[]).filter(x=>x.leafId===leafId&&!x.archived);
+  const val=calc(expr);
+  const ok=!isNaN(val)&&val>0&&gid&&!busy;
+  const K=({c,act})=><button onClick={act||(()=>setExpr(expr+c))} style={{flex:1,padding:"15px 0",fontSize:19,fontWeight:600,background:T.surface,border:"1px solid "+T.line,borderRadius:10}}>{c}</button>;
+
+  // rinomina etichetta: quanti ALTRI movimenti (esclusa questa riga) usano ancora l'etichetta vecchia
+  const vecchiaEt=(initial?.etichetta||"").trim();
+  const nuovaEtT=etichetta.trim();
+  const altriConEtichetta=useMemo(()=>{
+    if(!vecchiaEt || !tx) return 0;
+    return tx.filter(t=>t.id!==initial?.id && (t.etichetta||"").trim()===vecchiaEt).length;
+  },[tx,vecchiaEt,initial]);
+  const ePropriaRinomina = initial && vecchiaEt && nuovaEtT && nuovaEtT!==vecchiaEt;
+
+  const costruisciPayload=()=>({id:initial?.id,date,type,
+    amount:Math.round(val*100)/100,groupId:gid,leafId:leafId||null,subId:subId||null,
+    note,etichetta:nuovaEtT,shared,
+    splitMode:shared?mode:null,splitPercent:pct});
+
+  const eseguiSalvataggio=(rinominaOvunque)=>{
+    setConfirmRename(false); setBusy(true);
+    if(rinominaOvunque && renameEtichetta && altriConEtichetta>0){
+      renameEtichetta(vecchiaEt,nuovaEtT,initial?.id);
+      onSave(costruisciPayload());
+    } else {
+      onSave(costruisciPayload());
+      if(ePropriaRinomina && say) say("Cambiata solamente l'etichetta di questo movimento");
+    }
+  };
+
+  const handleSaveClick=()=>{
+    if(ePropriaRinomina && altriConEtichetta>0){ setConfirmRename(true); return; }
+    setBusy(true); onSave(costruisciPayload());
+  };
+
+  return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:12}}>{initial?"Modifica movimento":"Nuovo movimento"}</div>
+      <select value={kind} onChange={e=>setKind(e.target.value)} style={sel2}>
+        <option value="e">Spesa</option><option value="i">Entrata</option>
+        <option value="ec">Spesa condivisa</option><option value="ic">Entrata condivisa</option>
+      </select>
+
+      <Card style={{margin:"10px 0"}}>
+        <div style={{fontSize:12,color:T.muted,fontWeight:700}}>{type==="income"?"ENTRATA +":"USCITA −"}</div>
+        <div style={{fontSize:30,fontWeight:800,fontVariantNumeric:"tabular-nums",letterSpacing:-1,color:type==="income"?T.in:T.out,minHeight:40,wordBreak:"break-all"}}>{expr||"0"}</div>
+        <div style={{fontSize:13,color:isNaN(val)?T.out:T.muted}}>{expr?(isNaN(val)?"espressione non valida":"= "+eur(val)):"digita o calcola, e.g. 12.50+4"}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:10}}>
+          {["7","8","9","("].map(c=><K key={c} c={c}/>)}
+          {["4","5","6",")"].map(c=><K key={c} c={c}/>)}
+          {["1","2","3","+"].map(c=><K key={c} c={c}/>)}
+          {[".","0","-","*"].map(c=><K key={c} c={c}/>)}
+          <K c="/"/><K c="⌫" act={()=>setExpr(expr.slice(0,-1))}/><K c="C" act={()=>setExpr("")}/>
+          <K c="=" act={()=>{const v=calc(expr);if(!isNaN(v))setExpr(String(Math.round(v*100)/100));}}/>
+        </div>
+      </Card>
+
+      {shared && (
+        <Card style={{marginBottom:10}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:6}}>CONDIVISIONE</div>
+          <select value={mode} onChange={e=>setMode(e.target.value)} style={sel2}>
+            {["paid_by_me_split","paid_by_other_split","i_owe_full","other_owes_full"].map(m=><option key={m} value={m}>{SPLITLABEL(m,USERS[payer],USERS[o])}</option>)}
+          </select>
+          {(mode==="paid_by_me_split"||mode==="paid_by_other_split") && (
+            <select value={pct} onChange={e=>setPct(+e.target.value)} style={{...sel2,marginTop:8}}>
+              {[10,20,30,40,50,60,70,80,90].map(p=><option key={p} value={p}>Quota {USERS[payer]} {p}% · {USERS[o]} {100-p}%</option>)}
+            </select>
+          )}
+          {!isNaN(val)&&val>0 && (
+            <div style={{fontSize:12.5,color:T.muted,marginTop:8,background:T.brandSoft,padding:9,borderRadius:8}}>
+              A {USERS[payer]} {eur(shareFor({type,amount:val,shared:true,splitMode:mode,splitPercent:pct,createdBy:payer},payer))} · a {USERS[o]} {eur(shareFor({type,amount:val,shared:true,splitMode:mode,splitPercent:pct,createdBy:payer},o))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card style={{marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:6}}>CATEGORIA</div>
+        <div style={{display:"flex",gap:6,marginBottom:8}}>
+          {(l1==="spese"?["fisse","variabili"]:["stipendio","altre_entrate"]).map(k=>(
+            <button key={k} onClick={()=>{setL2(k);setGid(null);setLeafId(null);}} style={{flex:1,padding:9,borderRadius:9,border:"1px solid "+(l2===k?T.brand:T.line),background:l2===k?T.brandSoft:T.surface,fontWeight:700,fontSize:13}}>{L2LABEL[k]}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:gid?10:0}}>
+          {groups.map(g=>(
+            <button key={g.id} onClick={()=>{setGid(g.id);setLeafId(null);}} style={{padding:"7px 10px",borderRadius:18,border:"1px solid "+(gid===g.id?T.brand:T.line),background:gid===g.id?T.brandSoft:T.surface,fontSize:13}}>{g.icon} {g.name}</button>
+          ))}
+        </div>
+        {gid && (<>
+          <div style={{fontSize:11,color:T.muted,marginBottom:5}}>Dettaglio (facoltativo, tocca di nuovo per togliere)</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {leaves.map(l=>(
+              <button key={l.id} onClick={()=>{setLeafId(leafId===l.id?null:l.id);setSubId(null);}} style={{padding:"7px 10px",borderRadius:8,border:"1px solid "+(leafId===l.id?T.brand:T.line),background:leafId===l.id?T.brand:T.surface,color:leafId===l.id?"#fff":T.ink,fontSize:12.5}}>{l.name}</button>
+            ))}
+          </div>
+          {subs.length>0 && (<>
+            <div style={{fontSize:11,color:T.muted,margin:"8px 0 5px"}}>Dettaglio specifico</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {subs.map(x=>(
+                <button key={x.id} onClick={()=>setSubId(subId===x.id?null:x.id)} style={{padding:"6px 9px",borderRadius:8,border:"1px solid "+(subId===x.id?"#7A5AA8":T.line),background:subId===x.id?"#7A5AA8":T.surface,color:subId===x.id?"#fff":T.ink,fontSize:12}}>{x.name}</button>
+              ))}
+            </div>
+          </>)}
+        </>)}
+      </Card>
+
+      <Card style={{marginBottom:12,overflow:"hidden"}}>
+        <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...sel2,WebkitAppearance:"none",appearance:"none",minWidth:0,maxWidth:"100%",display:"block"}} />
+        <input placeholder="Nota (facoltativa)" value={note} onChange={e=>setNote(e.target.value)} style={{...sel2,marginTop:8}} />
+        <div style={{marginTop:8}}>
+          <EtichettaInput value={etichetta} onChange={setEtichetta} options={etichette} placeholder="Etichetta (es. Viaggio in Giappone)" />
+        </div>
+      </Card>
+
+      <Btn disabled={!ok} onClick={handleSaveClick}>{initial?"Salva modifiche":"Registra movimento"}</Btn>
+      {initial && <div style={{marginTop:8}}><Btn kind="danger" onClick={()=>onDelete(initial.id)}>Elimina movimento</Btn></div>}
+      <div style={{marginTop:8,marginBottom:8}}><Btn kind="ghost" onClick={onCancel}>Annulla</Btn></div>
+
+      {confirmRename && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:22,zIndex:90}}>
+          <Card style={{maxWidth:340}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Rinominare l'etichetta ovunque?</div>
+            <div style={{fontSize:14,lineHeight:1.5,marginBottom:16}}>
+              Hai cambiato "<b>{initial?.etichetta}</b>" in "<b>{etichetta.trim()}</b>". Altri <b>{altriConEtichetta}</b> movimenti usano ancora l'etichetta vecchia.
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <Btn kind="ghost" onClick={()=>eseguiSalvataggio(false)}>Solo questo movimento</Btn>
+              <Btn onClick={()=>eseguiSalvataggio(true)}>Rinomina ovunque ({altriConEtichetta})</Btn>
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Modulo di creazione: spesa ricorrente ---------- */
+function RecurringForm({cats,user,fb,say,onCancel}){
+  const o=other(user);
+  const [kind,setKind]=useState("e");   // e, i, ec, ic — stesso schema di AddEdit
+  const [expr,setExpr]=useState("");
+  const [mode,setMode]=useState("paid_by_me_split");
+  const [pct,setPct]=useState(50);
+  const [note,setNote]=useState("");
+  const [etichetta,setEtichetta]=useState("");
+  const [leafId,setLeafId]=useState(null);
+  const [subId,setSubId]=useState(null);
+  const [cadence,setCadence]=useState("monthly");
+  const [startDate,setStartDate]=useState(today());
+  const [endDate,setEndDate]=useState("");
+  const [busy,setBusy]=useState(false);
+
+  const shared=kind==="ec"||kind==="ic";
+  const type=(kind==="i"||kind==="ic")?"income":"expense";
+  const l1=type==="income"?"entrate":"spese";
+  const [l2,setL2]=useState("variabili");
+  const first=useRef(true);
+  useEffect(()=>{ if(first.current){first.current=false;return;}
+    if(l1==="entrate"&&(l2==="fisse"||l2==="variabili")){setL2("stipendio");setGid(null);setLeafId(null);}
+    if(l1==="spese"&&(l2==="stipendio"||l2==="altre_entrate")){setL2("variabili");setGid(null);setLeafId(null);}
+  },[l1]);
+  const [gid,setGid]=useState(null);
+
+  const groups=cats.groups.filter(g=>g.l2===l2&&!g.archived);
+  const leaves=cats.leaves.filter(l=>l.groupId===gid&&!l.archived);
+  const subs=(cats.subs||[]).filter(x=>x.leafId===leafId&&!x.archived);
+  const val=numDec(expr)||calc(expr);
+  const importoValido=!isNaN(val)&&val>0;
+  const ok=importoValido&&gid&&startDate;
+
+  const K=({c,act})=><button onClick={act||(()=>setExpr(expr+c))} style={{flex:1,padding:"15px 0",fontSize:19,fontWeight:600,background:T.surface,border:"1px solid "+T.line,borderRadius:10}}>{c}</button>;
+
+  const salva=()=>{
+    setBusy(true);
+    try{
+      fb.addDoc(fb.collection(fb.db,"recurring"),{
+        type,amount:Math.round(val*100)/100,groupId:gid,leafId:leafId||null,subId:subId||null,
+        note:note.trim(),etichetta:etichetta.trim(),shared,splitMode:shared?mode:null,splitPercent:pct,
+        cadence,startDate,endDate:endDate||null,lastGenerated:null,
+        createdBy:user,createdAt:fb.serverTimestamp()
+      }).catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+      say("Spesa ricorrente creata"); onCancel();
+    }catch(e){ say("Errore: "+(e.code||e.message)); setBusy(false); }
+  };
+
+  return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:12}}>Nuova spesa ricorrente</div>
+
+      <select value={kind} onChange={e=>setKind(e.target.value)} style={sel2}>
+        <option value="e">Spesa</option><option value="i">Entrata</option>
+        <option value="ec">Spesa condivisa</option><option value="ic">Entrata condivisa</option>
+      </select>
+
+      <Card style={{margin:"10px 0"}}>
+        <div style={{fontSize:12,color:T.muted,fontWeight:700}}>{type==="income"?"ENTRATA +":"USCITA −"}</div>
+        <div style={{fontSize:30,fontWeight:800,fontVariantNumeric:"tabular-nums",letterSpacing:-1,color:type==="income"?T.in:T.out,minHeight:40,wordBreak:"break-all"}}>{expr||"0"}</div>
+        <div style={{fontSize:13,color:isNaN(val)?T.out:T.muted}}>{expr?(isNaN(val)?"espressione non valida":"= "+eur(val)):"digita l'importo fisso"}</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:10}}>
+          {["7","8","9","("].map(c=><K key={c} c={c}/>)}
+          {["4","5","6",")"].map(c=><K key={c} c={c}/>)}
+          {["1","2","3","+"].map(c=><K key={c} c={c}/>)}
+          {[".","0","-","*"].map(c=><K key={c} c={c}/>)}
+          <K c="/"/><K c="⌫" act={()=>setExpr(expr.slice(0,-1))}/><K c="C" act={()=>setExpr("")}/>
+          <K c="=" act={()=>{const v=calc(expr);if(!isNaN(v))setExpr(String(Math.round(v*100)/100));}}/>
+        </div>
+      </Card>
+
+      {shared && (
+        <Card style={{marginBottom:10}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:6}}>CONDIVISIONE</div>
+          <select value={mode} onChange={e=>setMode(e.target.value)} style={sel2}>
+            {["paid_by_me_split","paid_by_other_split","i_owe_full","other_owes_full"].map(m=><option key={m} value={m}>{SPLITLABEL(m,USERS[user],USERS[o])}</option>)}
+          </select>
+          {(mode==="paid_by_me_split"||mode==="paid_by_other_split") && (
+            <select value={pct} onChange={e=>setPct(+e.target.value)} style={{...sel2,marginTop:8}}>
+              {[10,20,30,40,50,60,70,80,90].map(p=><option key={p} value={p}>Quota {USERS[user]} {p}% · {USERS[o]} {100-p}%</option>)}
+            </select>
+          )}
+        </Card>
+      )}
+
+      <Card style={{marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:6}}>CATEGORIA</div>
+        <div style={{display:"flex",gap:6,marginBottom:8}}>
+          {(l1==="spese"?["fisse","variabili"]:["stipendio","altre_entrate"]).map(k=>(
+            <button key={k} onClick={()=>{setL2(k);setGid(null);setLeafId(null);}} style={{flex:1,padding:9,borderRadius:9,border:"1px solid "+(l2===k?T.brand:T.line),background:l2===k?T.brandSoft:T.surface,fontWeight:700,fontSize:13}}>{L2LABEL[k]}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:gid?10:0}}>
+          {groups.map(g=>(
+            <button key={g.id} onClick={()=>{setGid(g.id);setLeafId(null);}} style={{padding:"7px 10px",borderRadius:18,border:"1px solid "+(gid===g.id?T.brand:T.line),background:gid===g.id?T.brandSoft:T.surface,fontSize:13}}>{g.icon} {g.name}</button>
+          ))}
+        </div>
+        {gid && (<>
+          <div style={{fontSize:11,color:T.muted,marginBottom:5}}>Dettaglio (facoltativo)</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {leaves.map(l=>(
+              <button key={l.id} onClick={()=>{setLeafId(leafId===l.id?null:l.id);setSubId(null);}} style={{padding:"7px 10px",borderRadius:8,border:"1px solid "+(leafId===l.id?T.brand:T.line),background:leafId===l.id?T.brand:T.surface,color:leafId===l.id?"#fff":T.ink,fontSize:12.5}}>{l.name}</button>
+            ))}
+          </div>
+          {subs.length>0 && (<>
+            <div style={{fontSize:11,color:T.muted,margin:"8px 0 5px"}}>Dettaglio specifico</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {subs.map(x=>(
+                <button key={x.id} onClick={()=>setSubId(subId===x.id?null:x.id)} style={{padding:"6px 9px",borderRadius:8,border:"1px solid "+(subId===x.id?"#7A5AA8":T.line),background:subId===x.id?"#7A5AA8":T.surface,color:subId===x.id?"#fff":T.ink,fontSize:12}}>{x.name}</button>
+              ))}
+            </div>
+          </>)}
+        </>)}
+      </Card>
+
+      <Card style={{marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:6}}>CADENZA</div>
+        <div style={{display:"flex",gap:6,marginBottom:9}}>
+          {[["weekly","Settimanale"],["monthly","Mensile"],["yearly","Annuale"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setCadence(k)} style={{flex:1,padding:9,borderRadius:9,border:"1px solid "+(cadence===k?T.brand:T.line),background:cadence===k?T.brandSoft:T.surface,fontWeight:700,fontSize:12.5}}>{l}</button>
+          ))}
+        </div>
+        <div style={{fontSize:11,color:T.muted,marginBottom:5}}>Prima occorrenza</div>
+        <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{...sel2,WebkitAppearance:"none",appearance:"none"}} />
+        {cadence==="weekly" && startDate && <div style={{fontSize:11.5,color:T.muted,marginTop:5}}>Si ripeterà ogni {WEEKDAYS[new Date(startDate+"T00:00:00").getDay()].toLowerCase()}.</div>}
+        <div style={{fontSize:11,color:T.muted,margin:"9px 0 5px"}}>Data di fine (facoltativa)</div>
+        <div style={{display:"flex",gap:6}}>
+          <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} style={{...sel2,WebkitAppearance:"none",appearance:"none",flex:1}} />
+          {endDate && <button onClick={()=>setEndDate("")} aria-label="Svuota data di fine"
+            style={{background:T.bg,border:"1px solid "+T.line,borderRadius:10,padding:"0 14px",color:T.muted,fontSize:15,flex:"0 0 auto"}}>✕</button>}
+        </div>
+      </Card>
+
+      <Card style={{marginBottom:12}}>
+        <input placeholder="Nota (es. Netflix)" value={note} onChange={e=>setNote(e.target.value)} style={sel2} />
+        <div style={{marginTop:8}}>
+          <EtichettaInput value={etichetta} onChange={setEtichetta} options={[]} placeholder="Etichetta (facoltativa)" />
+        </div>
+      </Card>
+
+      <Btn disabled={!ok||busy} onClick={salva}>Crea spesa ricorrente</Btn>
+      <div style={{marginTop:8,marginBottom:8}}><Btn kind="ghost" onClick={onCancel}>Annulla</Btn></div>
+    </div>
+  );
+}
+
+/* ---------- Report ---------- */
+function Report({tx,user,meta,balances,fb,say,cats}){
+  const [rev,setRev]=useState(""),[fin,setFin]=useState(""),[int,setInt]=useState("");
+  const [scale,setScale]=useState("anno");             // vale per l'intero report, tranne il grafico patrimoni
+  const [contiVis,setContiVis]=useState({revolut:true,fineco:true,intesa:true});
+  const [delBalance,setDelBalance]=useState(null);      // rilevazione in attesa di conferma eliminazione
+  const analisiRef=useRef(null);                        // ultimo stato dell'analisi per categoria, per la stampa
+  const mine=useMemo(()=>tx.map(t=>({t,q:shareFor(t,user)})).filter(x=>x.q>0.0001),[tx,user]);
+  const pkey=(d)=>scale==="mese"?d.slice(0,7):d.slice(0,4);
+  const shortLab=(k)=>scale==="mese"?MESI[+k.slice(5,7)-1]+" "+k.slice(2,4):k;
+  const longLab=(k)=>scale==="mese"?MESILUNGHI[+k.slice(5,7)-1]+" "+k.slice(0,4):k;
+
+  const byPeriod=useMemo(()=>{
+    const m={};
+    mine.forEach(({t,q})=>{const k=pkey(t.date),g=meta(t).group;if(!g)return;
+      m[k]=m[k]||{k,fisse:0,variabili:0,entrate:0};
+      if(t.type==="income")m[k].entrate+=q;else m[k][g.l2]+=q;});
+    return Object.values(m).sort((a,b)=>a.k.localeCompare(b.k));
+  },[mine,scale]);
+
+  const addSnapshot=()=>{
+    if(!rev&&!fin&&!int) return say("Inserisci almeno un valore");
+    try{ fb.addDoc(fb.collection(fb.db,"balances"),
+      {date:today(),revolut:numDec(rev),fineco:numDec(fin),intesa:numDec(int),createdBy:user,createdAt:fb.serverTimestamp()})
+      .catch(e=>say("Sincronizzazione non riuscita: "+(e.code||e.message)));
+      setRev("");setFin("");setInt("");say("Rilevazione salvata");}catch(e){say("Errore: "+(e.code||e.message));}
+  };
+
+  // grafico a istogrammi scorrevole: colori fissi per serie, oppure una funzione (riga,indice)=>colore
+  // per i casi in cui il colore dipende dal segno del valore (es. netto positivo/negativo).
+  const Bars=({rows,keys,colors,labelKey,onBarClick,activeKey})=>{
+    const box=useRef(null);
+    const full=Math.max(1,...rows.flatMap(r=>keys.map(k=>Math.abs(r[k]||0))));
+    const [max,setMax]=useState(full);
+    const recalc=()=>{const el=box.current;if(!el||!rows.length)return;
+      const item=el.scrollWidth/rows.length;
+      const a=Math.max(0,Math.floor(el.scrollLeft/item));
+      const b=Math.min(rows.length,Math.ceil((el.scrollLeft+el.clientWidth)/item));
+      const w=rows.slice(a,Math.max(a+1,b));
+      setMax(Math.max(1,...w.flatMap(r=>keys.map(k=>Math.abs(r[k]||0)))));};
+    useEffect(()=>{ if(box.current) box.current.scrollLeft=box.current.scrollWidth;
+      const id=setTimeout(recalc,60);return ()=>clearTimeout(id);},[rows,keys.join("|")]);
+    const colorAt=(r,i)=>typeof colors==="function"?colors(r,i):colors[i];
+    const Slot=onBarClick?"button":"div";
+    return (
+      <div style={{display:"flex",padding:"8px 0"}}>
+        <div style={{flex:"0 0 auto",width:48,height:100,position:"relative",marginRight:4}}>
+          {[1,0.5,0].map(f=><div key={f} style={{position:"absolute",right:0,top:(1-f)*100-6,fontSize:9.5,color:T.muted,fontVariantNumeric:"tabular-nums"}}>{eur0(max*f)}</div>)}
+        </div>
+        <div ref={box} onScroll={recalc} style={{display:"flex",gap:14,alignItems:"flex-end",overflowX:"auto",flex:1,borderLeft:"1px solid "+T.line,paddingLeft:8}}>
+          {rows.map(r=>(
+            <Slot key={r[labelKey]} onClick={onBarClick?()=>onBarClick(r.k):undefined}
+              style={{flex:"0 0 auto",textAlign:"center",background:onBarClick&&activeKey===r.k?T.brandSoft:"none",border:"none",borderRadius:8,padding:onBarClick?"4px 2px 2px":0}}>
+              <div style={{display:"flex",gap:4,alignItems:"flex-end",height:100}}>
+                {keys.map((k,i)=><div key={k} style={{width:17,height:Math.max(2,Math.min(100,(Math.abs(r[k]||0)/max)*100)),background:colorAt(r,i),borderRadius:"3px 3px 0 0",opacity:(r[k]||0)<0?0.5:(onBarClick&&activeKey&&activeKey!==r.k?0.55:1)}} />)}
+              </div>
+              <div style={{fontSize:10.5,color:onBarClick&&activeKey===r.k?T.brand:T.muted,marginTop:5,fontWeight:onBarClick&&activeKey===r.k?800:600}}>{r[labelKey]}</div>
+            </Slot>
+          ))}
+        </div>
+      </div>);
+  };
+  // in schermo mostra al massimo 5 righe con scorrimento verticale; in stampa la tabella e' sempre intera
+  const Tab=({head,rows})=>(
+    <div className="tabscroll" style={{overflowX:"auto",overflowY:rows.length>5?"auto":"visible",maxHeight:rows.length>5?190:"none"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5,fontVariantNumeric:"tabular-nums"}}>
+        <thead><tr>{head.map((h,i)=><th key={i} style={{textAlign:i?"right":"left",padding:"6px 5px",borderBottom:"2px solid "+T.line,color:T.muted,fontSize:10.5,textTransform:"uppercase",whiteSpace:"nowrap",position:"sticky",top:0,background:T.surface}}>{h}</th>)}</tr></thead>
+        <tbody>{rows.map((r,i)=><tr key={i}>{r.map((c,j)=><td key={j} style={{textAlign:j?"right":"left",padding:"6px 5px",borderBottom:"1px solid "+T.line,color:(j%2===0&&j)?T.muted:T.ink,whiteSpace:"nowrap"}}>{c}</td>)}</tr>)}</tbody>
+      </table>
+    </div>);
+
+  return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:4}}>Report · {USERS[user]}</div>
+      <div style={{fontSize:12.5,color:T.muted,marginBottom:10}}>Cifre precise e, a destra di ciascuna, l'arrotondamento al centinaio più vicino.</div>
+
+      <div style={{display:"flex",gap:6,marginBottom:14}}>
+        {["mese","anno"].map(s=>(
+          <button key={s} onClick={()=>setScale(s)} style={{flex:1,padding:9,borderRadius:9,border:"1px solid "+(scale===s?T.brand:T.line),background:scale===s?T.brandSoft:T.surface,color:scale===s?T.brand:T.muted,fontWeight:700,fontSize:13}}>Per {s}</button>
+        ))}
+      </div>
+
+      <H>1 · Fisse, variabili ed entrate {scale==="mese"?"per mese":"per anno"}</H>
+      <Card>
+        <Bars rows={byPeriod} keys={["fisse","variabili","entrate"]} colors={[T.brand,"#7FA3C7",T.in]} labelKey="k" />
+        <div style={{fontSize:11,color:T.muted,marginBottom:2}}>■ fisse ■ variabili ■ entrate · scorri per il resto dello storico</div>
+      </Card>
+      <Card style={{marginTop:8}}>
+        <Tab head={[scale==="mese"?"Mese":"Anno","Fisse","~100","Variabili","~100","Entrate","~100"]}
+          rows={[...byPeriod].reverse().map(r=>[longLab(r.k),eur(r.fisse),eur0(round100(r.fisse)),eur(r.variabili),eur0(round100(r.variabili)),eur(r.entrate),eur0(round100(r.entrate))])} />
+      </Card>
+
+      <H>2 · Patrimoni per rilevazione</H>
+      <Card>
+        <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+          {[["revolut","Revolut","#2E6BE6"],["fineco","Fineco",T.brand],["intesa","Intesa","#0E8A6A"]].map(([k,l,c])=>(
+            <button key={k} onClick={()=>setContiVis(v=>({...v,[k]:!v[k]}))}
+              style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",borderRadius:16,border:"1px solid "+(contiVis[k]?c:T.line),background:contiVis[k]?c+"1F":T.surface,fontSize:12,fontWeight:600,color:contiVis[k]?c:T.muted}}>
+              <span style={{width:8,height:8,borderRadius:2,background:contiVis[k]?c:T.line}} />{l}
+            </button>
+          ))}
+        </div>
+        {(()=>{ const contiColors={revolut:"#2E6BE6",fineco:T.brand,intesa:"#0E8A6A"};
+          const contiKeys=["revolut","fineco","intesa"].filter(k=>contiVis[k]);
+          return contiKeys.length===0 ? (
+            <div style={{fontSize:13.5,color:T.muted,padding:"10px 0"}}>Seleziona almeno un conto per vedere il grafico.</div>
+          ) : (<>
+            <Bars rows={balances.map(b=>({...b,lab:b.date.slice(2,7)}))} keys={contiKeys} colors={contiKeys.map(k=>contiColors[k])} labelKey="lab" />
+            <div style={{fontSize:11,color:T.muted,marginBottom:2}}>Segue le date delle rilevazioni, non il periodo scelto sopra. La tabella sotto resta sempre completa.</div>
+          </>);
+        })()}
+      </Card>
+      <Card style={{marginTop:8}}>
+        <div className="tabscroll" style={{overflowX:"auto",overflowY:balances.length>5?"auto":"visible",maxHeight:balances.length>5?190:"none"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12.5,fontVariantNumeric:"tabular-nums"}}>
+            <thead><tr>{["Data","Revolut","~100","Fineco","~100","Intesa","~100","Totale","~100",""].map((h,i)=>
+              <th key={i} style={{textAlign:i&&i<9?"right":"left",padding:"6px 5px",borderBottom:"2px solid "+T.line,color:T.muted,fontSize:10.5,textTransform:"uppercase",whiteSpace:"nowrap",position:"sticky",top:0,background:T.surface}}>{h}</th>)}</tr></thead>
+            <tbody>
+              {[...balances].reverse().map(b=>{const tot=b.revolut+b.fineco+b.intesa;
+                const cells=[b.date,eur(b.revolut),eur0(round100(b.revolut)),eur(b.fineco),eur0(round100(b.fineco)),eur(b.intesa),eur0(round100(b.intesa)),eur(tot),eur0(round100(tot))];
+                return (<tr key={b.id}>
+                  {cells.map((c,j)=><td key={j} style={{textAlign:j?"right":"left",padding:"6px 5px",borderBottom:"1px solid "+T.line,color:(j%2===0&&j)?T.muted:T.ink,whiteSpace:"nowrap"}}>{c}</td>)}
+                  <td style={{textAlign:"right",padding:"6px 2px",borderBottom:"1px solid "+T.line}}>
+                    <button onClick={()=>setDelBalance(b)} aria-label="Elimina rilevazione" style={{background:"none",border:"none",color:T.out,fontSize:14,padding:"2px 5px"}}>✕</button>
+                  </td>
+                </tr>);
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{borderTop:"1px solid "+T.line,marginTop:12,paddingTop:10}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:7}}>NUOVA RILEVAZIONE · {today()}</div>
+          <input placeholder="Revolut (conto deposito)" value={rev} onChange={e=>setRev(e.target.value)} inputMode="decimal" style={sel2} />
+          <input placeholder="Fineco (investimenti)" value={fin} onChange={e=>setFin(e.target.value)} inputMode="decimal" style={{...sel2,marginTop:7}} />
+          <input placeholder="Intesa Sanpaolo" value={int} onChange={e=>setInt(e.target.value)} inputMode="decimal" style={{...sel2,marginTop:7}} />
+          <div style={{marginTop:9}}><Btn kind="ghost" onClick={addSnapshot}>Salva rilevazione</Btn></div>
+        </div>
+      </Card>
+
+      {delBalance && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",padding:22,zIndex:90}}>
+          <Card style={{maxWidth:340}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Eliminare questa rilevazione?</div>
+            <div style={{fontSize:14,lineHeight:1.5,marginBottom:16}}>
+              <b>{delBalance.date}</b><br/>Revolut {eur(delBalance.revolut)} · Fineco {eur(delBalance.fineco)} · Intesa {eur(delBalance.intesa)}
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn kind="ghost" onClick={()=>setDelBalance(null)}>Annulla</Btn>
+              <Btn kind="danger" onClick={()=>{
+                fb.deleteDoc(fb.doc(fb.db,"balances",delBalance.id)).catch(e=>say("Errore: "+(e.code||e.message)));
+                say("Rilevazione eliminata"); setDelBalance(null);
+              }}>Elimina</Btn>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <H>3 · Differenza entrate meno uscite {scale==="mese"?"per mese":"per anno"}</H>
+      <Card>
+        <Bars rows={byPeriod.map(r=>({...r,netto:r.entrate-r.fisse-r.variabili}))} keys={["netto"]}
+          colors={(r)=>r.netto<0?T.out:T.in} labelKey="k" />
+        <div style={{fontSize:11,color:T.muted,marginBottom:2}}>■ verde se il periodo chiude in attivo, ■ rosso se in passivo</div>
+      </Card>
+      <Card style={{marginTop:8}}>
+        <Tab head={[scale==="mese"?"Mese":"Anno","Entrate","~100","Uscite","~100","Netto","~100"]}
+          rows={[...byPeriod].reverse().map(r=>{const u=r.fisse+r.variabili,n=r.entrate-u;
+            return [longLab(r.k),eur(r.entrate),eur0(round100(r.entrate)),eur(u),eur0(round100(u)),eur(n),eur0(round100(n))];})} />
+      </Card>
+
+      <AnalisiCategoria {...{cats,mine,meta,scale,pkey,shortLab,longLab,Bars,Tab,
+        onData:(d)=>{analisiRef.current=d;}}} />
+
+      <div style={{margin:"16px 0 4px"}}><Btn onClick={()=>{
+        const titoloPrecedente=document.title;
+        try{
+          const el=document.getElementById("print-root");
+          el.innerHTML=buildPrintHTML({userName:USERS[user],scale,byPeriod,balances,contiVis,analysis:analisiRef.current});
+          // molti browser usano il titolo della pagina come nome suggerito per "Salva come PDF".
+          // su iOS window.print() NON aspetta che l'utente chiuda la finestra di stampa/condivisione:
+          // ripristinare il titolo troppo presto (subito dopo la chiamata) vanificava la modifica.
+          // lo si tiene per qualche secondo, il tempo che il sistema lo legga per il nome del file.
+          document.title="Spendometro_Report_"+USERS[user]+"_"+today();
+          window.print();
+          setTimeout(()=>{ document.title=titoloPrecedente; },4000);
+        }catch(e){ say("Stampa non disponibile"); document.title=titoloPrecedente; }
+      }}>Condividi report in PDF</Btn></div>
+      <div style={{fontSize:11.5,color:T.muted,lineHeight:1.5,paddingBottom:10}}>Su iPhone si apre la stampa: pizzica per ingrandire l'anteprima, poi usa Condividi per inviare il PDF via mail.</div>
+    </div>
+  );
+}
+
+/* ---------- Analisi per categoria: selezione multipla, confronto fianco a fianco, filtro etichetta ---------- */
+const PALETTE_SERIE=["#1F3A5F","#7A5AA8","#B8860B","#0E8A6A","#C0432C"];
+const MAX_NODI=5;
+const L2S_ANALISI=[["fisse","Fisse"],["variabili","Variabili"],["stipendio","Stipendio"],["altre_entrate","Altre entrate"]];
+
+function NodeRow({label,indent,hasChildren,expanded,onToggleExp,selected,onToggleSel,disabled,swatch}){
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 4px",marginLeft:indent*16,opacity:disabled?0.4:1}}>
+      {hasChildren ? (
+        <button onClick={onToggleExp} style={{background:"none",border:"none",padding:2,display:"flex",color:T.muted}}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"
+            style={{transform:expanded?"rotate(90deg)":"none",transition:"transform .12s"}}><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+      ) : <span style={{width:13}} />}
+      <button onClick={disabled?undefined:onToggleSel} disabled={disabled}
+        style={{width:18,height:18,flex:"0 0 auto",borderRadius:5,border:"2px solid "+(selected?(swatch||T.brand):T.line),
+        background:selected?(swatch||T.brand):"#fff"}} />
+      <button onClick={hasChildren?onToggleExp:(disabled?undefined:onToggleSel)} disabled={disabled&&!hasChildren}
+        style={{background:"none",border:"none",padding:0,textAlign:"left",flex:1,fontSize:13,color:T.ink,fontWeight:selected?700:400}}>{label}</button>
+    </div>
+  );
+}
+
+function AnalisiCategoria({cats,mine,meta,scale,pkey,shortLab,longLab,Bars,Tab,onData}){
+  const [exp,setExp]=useState(()=>new Set());
+  const [nodi,setNodi]=useState([]);          // [{id,name}], ordine = ordine di selezione = ordine colori
+  const [etFiltro,setEtFiltro]=useState("");
+  const [selPeriod,setSelPeriod]=useState(null);  // periodo toccato nel grafico: la tabella parte vuota finche' non lo scegli
+  const toggleExp=(k)=>setExp(s=>{const n=new Set(s); n.has(k)?n.delete(k):n.add(k); return n;});
+  const isSel=(id)=>nodi.some(n=>n.id===id);
+  const toggleSel=(id,name)=>setNodi(list=>{
+    if(list.some(n=>n.id===id)) return list.filter(n=>n.id!==id);
+    if(list.length>=MAX_NODI) return list;
+    return [...list,{id,name}];
+  });
+
+  const etichetteDisponibili=useMemo(()=>[...new Set(mine.map(x=>(x.t.etichetta||"").trim()).filter(Boolean))].sort(),[mine]);
+
+  // ogni movimento appartiene a piu' nodi contemporaneamente (uno per livello): L1, L2, L3, L4, L5
+  const nodiDi=(t)=>{
+    const {leaf,group,sub}=meta(t); if(!group) return [];
+    const ids=["L1:"+group.l1,"L2:"+group.l2,"L3:"+group.id];
+    if(leaf) ids.push("L4:"+leaf.id);
+    if(sub) ids.push("L5:"+sub.id);
+    return ids;
+  };
+
+  const attivo = nodi.length>0 || etFiltro.trim();
+  const etF = etFiltro.trim().toLowerCase();
+  useEffect(()=>{ setSelPeriod(null); },[nodi,etF,scale]);  // una nuova selezione azzera il periodo scelto prima
+
+  const {rows,movimenti}=useMemo(()=>{
+    if(!attivo) return {rows:[],movimenti:[]};
+    const periodi={};
+    const movs=[];
+    mine.forEach(({t,q})=>{
+      if(etF && (t.etichetta||"").trim().toLowerCase()!==etF) return;
+      const ids=nodiDi(t);
+      const match = nodi.length ? nodi.filter(n=>ids.includes(n.id)) : [{id:"ALL",name:"Totale"}];
+      if(!match.length) return;
+      const pk=pkey(t.date);
+      periodi[pk]=periodi[pk]||{k:pk};
+      match.forEach(m=>{ periodi[pk][m.id]=(periodi[pk][m.id]||0)+q; });
+      movs.push({t,q,cats:match.map(m=>m.name)});
+    });
+    const rows=Object.values(periodi).sort((a,b)=>a.k.localeCompare(b.k));
+    movs.sort((a,b)=>b.t.date.localeCompare(a.t.date));
+    return {rows,movimenti:movs};
+  },[mine,nodi,etF,scale]);
+
+  const serie = nodi.length ? nodi : (attivo ? [{id:"ALL",name:"Totale"}] : []);
+  const keys = serie.map(s=>s.id);
+  const totali = Object.fromEntries(serie.map(s=>[s.id, rows.reduce((sum,r)=>sum+(r[s.id]||0),0)]));
+
+  useEffect(()=>{
+    if(onData) onData({active:attivo,serie,rows,totali,movimenti,scale,longLab});
+  },[attivo,rows,movimenti]);
+
+  return (<>
+    <H>4 · Analisi per categoria</H>
+    <Card>
+      <div style={{fontSize:12.5,color:T.muted,marginBottom:9,lineHeight:1.5}}>
+        Seleziona una o più categorie (a qualsiasi livello) per confrontarle fianco a fianco, e/o filtra per etichetta per un evento specifico come un viaggio.
+      </div>
+      <div style={{maxHeight:280,overflowY:"auto",border:"1px solid "+T.line,borderRadius:10,padding:"4px 6px"}}>
+        {L2S_ANALISI.map(([l2,l2label])=>{
+          const l2id="L2:"+l2;
+          const groups=cats.groups.filter(g=>g.l2===l2 && !g.archived);
+          const disL2 = !isSel(l2id) && nodi.length>=MAX_NODI;
+          return (
+            <div key={l2}>
+              <NodeRow label={l2label} indent={0} hasChildren={groups.length>0} expanded={exp.has(l2id)}
+                onToggleExp={()=>toggleExp(l2id)} selected={isSel(l2id)} onToggleSel={()=>toggleSel(l2id,l2label)}
+                disabled={disL2} swatch={isSel(l2id)?PALETTE_SERIE[nodi.findIndex(n=>n.id===l2id)]:null} />
+              {exp.has(l2id) && groups.map(g=>{
+                const l3id="L3:"+g.id;
+                const leaves=cats.leaves.filter(l=>l.groupId===g.id && !l.archived);
+                const disL3 = !isSel(l3id) && nodi.length>=MAX_NODI;
+                return (
+                  <div key={g.id}>
+                    <NodeRow label={g.icon+" "+g.name} indent={1} hasChildren={leaves.length>0} expanded={exp.has(l3id)}
+                      onToggleExp={()=>toggleExp(l3id)} selected={isSel(l3id)} onToggleSel={()=>toggleSel(l3id,l2label+" › "+g.name)}
+                      disabled={disL3} swatch={isSel(l3id)?PALETTE_SERIE[nodi.findIndex(n=>n.id===l3id)]:null} />
+                    {exp.has(l3id) && leaves.map(l=>{
+                      const l4id="L4:"+l.id;
+                      const subs=(cats.subs||[]).filter(x=>x.leafId===l.id && !x.archived);
+                      const disL4 = !isSel(l4id) && nodi.length>=MAX_NODI;
+                      return (
+                        <div key={l.id}>
+                          <NodeRow label={l.name} indent={2} hasChildren={subs.length>0} expanded={exp.has(l4id)}
+                            onToggleExp={()=>toggleExp(l4id)} selected={isSel(l4id)} onToggleSel={()=>toggleSel(l4id,g.name+" › "+l.name)}
+                            disabled={disL4} swatch={isSel(l4id)?PALETTE_SERIE[nodi.findIndex(n=>n.id===l4id)]:null} />
+                          {exp.has(l4id) && subs.map(x=>{
+                            const l5id="L5:"+x.id;
+                            const disL5 = !isSel(l5id) && nodi.length>=MAX_NODI;
+                            return (
+                              <NodeRow key={x.id} label={x.name} indent={3} hasChildren={false} expanded={false}
+                                onToggleExp={()=>{}} selected={isSel(l5id)} onToggleSel={()=>toggleSel(l5id,l.name+" › "+x.name)}
+                                disabled={disL5} swatch={isSel(l5id)?PALETTE_SERIE[nodi.findIndex(n=>n.id===l5id)]:null} />
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+      {nodi.length>=MAX_NODI && <div style={{fontSize:11.5,color:T.muted,marginTop:6}}>Massimo {MAX_NODI} categorie a confronto contemporaneamente.</div>}
+
+      <div style={{marginTop:11}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:5}}>FILTRA PER ETICHETTA (facoltativo)</div>
+        <EtichettaInput value={etFiltro} onChange={setEtFiltro} options={etichetteDisponibili} placeholder="Es. Viaggio in Giappone" />
+      </div>
+
+      {nodi.length>0 && (
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:10}}>
+          {nodi.map((n,i)=>(
+            <span key={n.id} style={{display:"flex",alignItems:"center",gap:5,background:T.bg,borderRadius:14,padding:"4px 9px",fontSize:12}}>
+              <span style={{width:9,height:9,borderRadius:2,background:PALETTE_SERIE[i]}} />
+              {n.name}
+              <button onClick={()=>toggleSel(n.id,n.name)} style={{background:"none",border:"none",color:T.muted,fontSize:14,lineHeight:1,padding:0}}>✕</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </Card>
+
+    {attivo && (
+      <>
+        <Card style={{marginTop:8}}>
+          {rows.length===0 ? <div style={{fontSize:13.5,color:T.muted,padding:"6px 0"}}>Nessun movimento per questa selezione.</div> : (<>
+            <Bars rows={rows} keys={keys} colors={serie.map((_,i)=>PALETTE_SERIE[i])} labelKey="k"
+              onBarClick={setSelPeriod} activeKey={selPeriod} />
+            <div style={{display:"flex",flexWrap:"wrap",gap:10,fontSize:11,color:T.muted,marginTop:2}}>
+              {serie.map((sname,i)=>(
+                <span key={sname.id}>■ {sname.name}: <b style={{color:T.ink}}>{eur(totali[sname.id]||0)}</b></span>
+              ))}
+            </div>
+            <div style={{fontSize:11,color:T.muted,marginTop:6,textAlign:"center"}}>{selPeriod?"Tocca un altro periodo per cambiarlo":"Tocca un periodo per vederne i movimenti"}</div>
+          </>)}
+        </Card>
+
+        {selPeriod && (
+          <Card style={{marginTop:8,padding:"4px 14px"}}>
+            <div style={{fontSize:11,letterSpacing:1.2,textTransform:"uppercase",color:T.muted,fontWeight:700,padding:"9px 0 3px"}}>
+              {longLab(selPeriod)} · {movimenti.filter(m=>pkey(m.t.date)===selPeriod).length} movimenti
+            </div>
+            {movimenti.filter(m=>pkey(m.t.date)===selPeriod).length===0 && (
+              <div style={{padding:"14px 0",fontSize:13.5,color:T.muted}}>Nessun movimento in questo periodo.</div>
+            )}
+            {movimenti.filter(m=>pkey(m.t.date)===selPeriod).map(({t,q,cats:catNames})=>{
+              const {leaf,group,sub}=meta(t);
+              return (
+                <div key={t.id} style={{display:"flex",gap:10,alignItems:"center",padding:"9px 0",borderBottom:"1px solid "+T.line}}>
+                  <div style={{fontSize:18}}>{group?group.icon:"📌"}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13.5,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                      {sub?sub.name:(leaf?leaf.name:(group?group.name:"?"))}{t.note?<span style={{color:T.muted,fontWeight:400}}> · {t.note}</span>:null}
+                    </div>
+                    <div style={{fontSize:11,color:T.muted}}>{t.date.slice(8,10)}/{t.date.slice(5,7)}/{t.date.slice(0,4)} · {catNames.join(", ")}</div>
+                    {t.etichetta && <div style={{fontSize:11,color:"#7A5AA8",fontWeight:700}}>{t.etichetta}</div>}
+                  </div>
+                  <div style={{fontWeight:700,fontSize:13.5,color:t.type==="income"?T.in:T.out,fontVariantNumeric:"tabular-nums"}}>{t.type==="income"?"+":"−"}{eur(q).slice(1)}</div>
+                </div>
+              );
+            })}
+          </Card>
+        )}
+      </>
+    )}
+  </>);
+}
+
+/* ---------- Categorie ---------- */
+function CatsView({cats,saveCats,tx,say}){
+  const [l2,setL2]=useState("fisse");
+  const [newLeaf,setNewLeaf]=useState({});
+  const [newGroup,setNewGroup]=useState("");
+  const [picking,setPicking]=useState(null);
+  const count=(leafId)=>tx.filter(t=>t.leafId===leafId).length;
+  const gcount=(gid)=>tx.filter(t=>t.groupId===gid).length;
+  const scount=(sid)=>tx.filter(t=>t.subId===sid).length;
+  const subs=cats.subs||[];
+  const addSub=(lid)=>{const n=(newLeaf["s"+lid]||"").trim();if(!n)return;
+    saveCats({...cats,subs:[...subs,{id:lid+"."+slug(n)+"_"+Date.now(),leafId:lid,name:n,archived:false}]});
+    setNewLeaf({...newLeaf,["s"+lid]:""});say("Dettaglio aggiunto");};
+
+  const rename=(kind,id,name)=>{
+    if(!name||!name.trim()) return;
+    saveCats(kind==="g"
+      ?{...cats,groups:cats.groups.map(g=>g.id===id?{...g,name:name.trim()}:g)}
+      :{...cats,leaves:cats.leaves.map(l=>l.id===id?{...l,name:name.trim()}:l)});
+    say("Rinominata, lo storico si aggiorna da solo");
+  };
+  const addLeaf=(gid)=>{const n=(newLeaf[gid]||"").trim();if(!n)return;
+    saveCats({...cats,leaves:[...cats.leaves,{id:gid+"."+slug(n)+"_"+Date.now(),groupId:gid,name:n,archived:false}]});
+    setNewLeaf({...newLeaf,[gid]:""});say("Voce aggiunta");};
+  const addGroup=()=>{const n=newGroup.trim();if(!n)return;
+    const l1=(l2==="fisse"||l2==="variabili")?"spese":"entrate";
+    saveCats({...cats,groups:[...cats.groups,{id:l2+"."+slug(n)+"_"+Date.now(),l1,l2,name:n,icon:autoEmoji(n),archived:false}]});
+    setNewGroup("");say("Gruppo aggiunto con emoji "+autoEmoji(n));};
+  const removeLeaf=(l)=>{
+    if(count(l.id)>0){ saveCats({...cats,leaves:cats.leaves.map(x=>x.id===l.id?{...x,archived:!x.archived}:x)});
+      say(l.archived?"Voce riattivata":"Archiviata: ha "+count(l.id)+" movimenti collegati"); }
+    else { saveCats({...cats,leaves:cats.leaves.filter(x=>x.id!==l.id)}); say("Voce eliminata"); }};
+  const removeGroup=(g)=>{
+    const n=gcount(g.id);
+    if(n>0){ saveCats({...cats,groups:cats.groups.map(x=>x.id===g.id?{...x,archived:!x.archived}:x)});
+      say(g.archived?"Gruppo riattivato":"Archiviato: ha "+n+" movimenti"); }
+    else { saveCats({...cats,groups:cats.groups.filter(x=>x.id!==g.id),leaves:cats.leaves.filter(x=>x.groupId!==g.id)}); say("Gruppo eliminato"); }};
+
+  return (
+    <div style={{paddingTop:14}}>
+      <div style={{fontSize:19,fontWeight:800,marginBottom:4}}>Categorie</div>
+      <div style={{fontSize:12.5,color:T.muted,marginBottom:12}}>Livelli 1 e 2 fissi. Gruppi e voci si aggiungono e rinominano; la rinomina è retroattiva su tutto lo storico.</div>
+      <div style={{display:"flex",gap:5,marginBottom:12,flexWrap:"wrap"}}>
+        {Object.keys(TREE).map(k=>(
+          <button key={k} onClick={()=>setL2(k)} style={{padding:"7px 11px",borderRadius:18,border:"1px solid "+(l2===k?T.brand:T.line),background:l2===k?T.brandSoft:T.surface,fontSize:12.5,fontWeight:600}}>{L2LABEL[k]}</button>
+        ))}
+      </div>
+      {cats.groups.filter(g=>g.l2===l2).map(g=>(
+        <Card key={g.id} style={{marginBottom:9,opacity:g.archived?0.5:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <button onClick={()=>setPicking(picking===g.id?null:g.id)} style={{fontSize:19,background:picking===g.id?T.brandSoft:"none",border:"1px solid "+(picking===g.id?T.brand:T.line),borderRadius:8,padding:"3px 7px"}}>{g.icon}</button>
+            <input defaultValue={g.name} onBlur={e=>e.target.value!==g.name&&rename("g",g.id,e.target.value)} style={{flex:1,border:"none",fontSize:15,fontWeight:700,background:"none",color:T.ink,minWidth:0}} />
+            <button onClick={()=>removeGroup(g)} style={{background:"none",border:"1px solid "+T.line,borderRadius:7,fontSize:11,padding:"3px 7px",color:T.muted}}>{gcount(g.id)>0?(g.archived?"riattiva":"archivia"):"elimina"}</button>
+          </div>
+          {picking===g.id && (
+            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:8,padding:8,background:T.bg,borderRadius:9,maxHeight:150,overflowY:"auto"}}>
+              {PALETTE.map((e,i)=><button key={i} onClick={()=>{saveCats({...cats,groups:cats.groups.map(x=>x.id===g.id?{...x,icon:e}:x)});setPicking(null);say("Emoji aggiornata");}} style={{fontSize:18,background:"none",border:"none",padding:2}}>{e}</button>)}
+            </div>
+          )}
+          <div style={{marginTop:8}}>
+            {cats.leaves.filter(l=>l.groupId===g.id).map(l=>(
+            <React.Fragment key={l.id}>
+              <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 0",borderTop:"1px solid "+T.line,opacity:l.archived?0.45:1}}>
+                <input defaultValue={l.name} onBlur={e=>e.target.value!==l.name&&rename("l",l.id,e.target.value)} style={{flex:1,border:"none",fontSize:13.5,background:"none",color:T.ink,minWidth:0}} />
+                <span style={{fontSize:11,color:T.muted}}>{count(l.id)}</span>
+                <button onClick={()=>removeLeaf(l)} style={{background:"none",border:"1px solid "+T.line,borderRadius:7,fontSize:11,padding:"3px 7px",color:T.muted}}>{count(l.id)>0?(l.archived?"riattiva":"archivia"):"elimina"}</button>
+              </div>
+              {(subs.filter(x=>x.leafId===l.id).length>0 || newLeaf["s"+l.id]!==undefined) && (
+                <div style={{marginLeft:14,paddingLeft:8,borderLeft:"2px solid "+T.brandSoft}}>
+                  {subs.filter(x=>x.leafId===l.id).map(x=>(
+                    <div key={x.id} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0"}}>
+                      <input defaultValue={x.name} onBlur={e=>e.target.value!==x.name&&saveCats({...cats,subs:subs.map(y=>y.id===x.id?{...y,name:e.target.value.trim()}:y)})}
+                        style={{flex:1,border:"none",fontSize:12.5,background:"none",color:T.brand,minWidth:0}} />
+                      <span style={{fontSize:10.5,color:T.muted}}>{scount(x.id)}</span>
+                      <button onClick={()=>{ if(scount(x.id)>0) saveCats({...cats,subs:subs.map(y=>y.id===x.id?{...y,archived:!y.archived}:y)});
+                          else saveCats({...cats,subs:subs.filter(y=>y.id!==x.id)}); }}
+                        style={{background:"none",border:"1px solid "+T.line,borderRadius:6,fontSize:10,padding:"2px 6px",color:T.muted}}>{scount(x.id)>0?(x.archived?"riattiva":"archivia"):"elimina"}</button>
+                    </div>
+                  ))}
+                  <div style={{display:"flex",gap:5,marginTop:4}}>
+                    <input placeholder="Nuovo dettaglio…" value={newLeaf["s"+l.id]||""} onChange={e=>setNewLeaf({...newLeaf,["s"+l.id]:e.target.value})}
+                      style={{...sel2,padding:"5px 8px",fontSize:12.5}} />
+                    <button onClick={()=>addSub(l.id)} style={{background:T.brandSoft,border:"1px solid "+T.brand,color:T.brand,borderRadius:8,padding:"0 10px",fontWeight:700,fontSize:13}}>+</button>
+                  </div>
+                </div>
+              )}
+              {subs.filter(x=>x.leafId===l.id).length===0 && newLeaf["s"+l.id]===undefined && (
+                <button onClick={()=>setNewLeaf({...newLeaf,["s"+l.id]:""})}
+                  style={{background:"none",border:"none",color:T.brand,fontSize:11,padding:"2px 0 4px 14px"}}>+ aggiungi dettaglio</button>
+              )}
+            </React.Fragment>
+            ))}
+            <div style={{display:"flex",gap:6,marginTop:7}}>
+              <input placeholder="Nuova voce…" value={newLeaf[g.id]||""} onChange={e=>setNewLeaf({...newLeaf,[g.id]:e.target.value})} style={{...sel2,padding:"7px 9px",fontSize:14}} />
+              <button onClick={()=>addLeaf(g.id)} style={{background:T.brandSoft,border:"1px solid "+T.brand,color:T.brand,borderRadius:9,padding:"0 13px",fontWeight:700}}>+</button>
+            </div>
+          </div>
+        </Card>
+      ))}
+      <Card style={{marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.muted,marginBottom:7}}>NUOVO GRUPPO IN {L2LABEL[l2].toUpperCase()}</div>
+        <div style={{display:"flex",gap:6}}>
+          <input placeholder="Nome gruppo…" value={newGroup} onChange={e=>setNewGroup(e.target.value)} style={{...sel2,padding:"8px 10px",fontSize:14}} />
+          <button onClick={addGroup} style={{background:T.brandSoft,border:"1px solid "+T.brand,color:T.brand,borderRadius:9,padding:"0 14px",fontWeight:700}}>+</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------- Dati ---------- */
+const CSVHEAD=["Data","Tipo","Importo","L2","L3","L4","L5","Etichetta","Nota","Split","Quota","InseritoDa"];
+
+function SchermataDati({tx,cats,meta,user,fb,doBackup,config,photo,setSimLock,say,detachTx,attachTx}){
+  const [imp,setImp]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [prog,setProg]=useState(null);
+  const [confermaImport,setConfermaImport]=useState(false);
+  const [nServer,setNServer]=useState(null);
+  const apriConferma=async()=>{
+    setNServer(null); setConfermaImport(true);
+    try{ const s=await fb.getCountFromServer(fb.collection(fb.db,"transactions")); setNServer(s.data().count); }
+    catch(e){ setNServer(tx.length); }
+  };
+
+  const exportCSV=(all)=>{
+    const rows=(all?tx:tx.filter(t=>shareFor(t,user)>0)).map(t=>{
+      const {leaf,group,sub}=meta(t);
+      return [t.date,t.type==="income"?"Entrata":"Spesa",t.amount.toFixed(2),
+        group?group.l2:"",group?group.name:"",leaf?leaf.name:"",sub?sub.name:"",
+        t.etichetta||"",t.note||"",t.shared?t.splitMode:"",t.shared?t.splitPercent:50,t.createdBy];
+    });
+    const csv="\uFEFF"+[CSVHEAD,...rows].map(r=>r.map(c=>'"'+String(c??"").replace(/"/g,'""')+'"').join(";")).join("\n");
+    const how=shareOrDownload(new Blob([csv],{type:"text/csv"}),
+      "SPENDOMETRO_"+(all?"completo":"mio")+"_"+today()+".csv","Export Spendometro");
+    say(how==="fallback"?"Export non riuscito qui, riprova dal telefono":"CSV generato");
+  };
+
+  const onPhoto=(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    const rd=new FileReader();
+    rd.onload=()=>{
+      const img=new Image();
+      img.onload=()=>{
+        const MAXW=1000, MAXH=520;
+        let w=img.width,h=img.height;
+        const sc=Math.min(MAXW/w,MAXH/h,1); w=Math.round(w*sc); h=Math.round(h*sc);
+        const cv=document.createElement("canvas"); cv.width=w; cv.height=h;
+        cv.getContext("2d").drawImage(img,0,0,w,h);
+        let q=0.72,url=cv.toDataURL("image/jpeg",q);
+        while(url.length>700000&&q>0.32){ q-=0.1; url=cv.toDataURL("image/jpeg",q); }
+        if(url.length>900000) return say("Foto troppo pesante, provane una piu piccola");
+        try{ fb.setDoc(fb.doc(fb.db,"meta","photo"),{dataUrl:url,updatedBy:user,updatedAt:fb.serverTimestamp()})
+            .catch(err=>say("Sincronizzazione foto non riuscita: "+(err.code||err.message)));
+          say("Foto aggiornata per entrambi"); }catch(err){ say("Errore: "+(err.code||err.message)); }
+      };
+      img.onerror=()=>say("Immagine non leggibile");
+      img.src=rd.result;
+    };
+    rd.readAsDataURL(file);
+  };
+
+  const parseCSV=(text)=>{
+    text=text.replace(/^\uFEFF/,"");
+    // separatore dedotto dalla prima riga: il piu' frequente fuori dalle virgolette
+    const testa=text.split(/\r?\n/)[0].replace(/"[^"]*"/g,"");
+    const SEP=(testa.split(";").length>=testa.split(",").length)?";":",";
+    const rows=[];let cur=[],f="",q=false;
+    for(let i=0;i<text.length;i++){const c=text[i];
+      if(q){ if(c==='"'&&text[i+1]==='"'){f+='"';i++;} else if(c==='"'){q=false;} else f+=c; }
+      else { if(c==='"')q=true; else if(c===SEP){cur.push(f);f="";}
+        else if(c==="\n"){cur.push(f);rows.push(cur);cur=[];f="";}
+        else if(c!=="\r") f+=c; } }
+    if(f||cur.length){cur.push(f);rows.push(cur);}
+    return rows.filter(r=>r.some(x=>x!==""));
+  };
+
+  const onFile=(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    const r=new FileReader();
+    r.onload=()=>{ try{
+      const rows=parseCSV(String(r.result));
+      const head=rows[0].map(h=>h.trim());
+      const ix=Object.fromEntries(CSVHEAD.map(h=>[h,head.findIndex(x=>x.toLowerCase()===h.toLowerCase())]));
+      if(ix.Data<0||ix.Importo<0||ix.L2<0) return say("Intestazione non riconosciuta");
+      const recs=rows.slice(1).map(r=>({
+        date:(r[ix.Data]||"").slice(0,10),
+        type:(r[ix.Tipo]||"").toLowerCase().startsWith("entrat")?"income":"expense",
+        amount:Math.abs(parseFloat(String(r[ix.Importo]).replace(",","."))||0),
+        l2:(r[ix.L2]||"").trim(), l3:(r[ix.L3]||"").trim(),
+        l4:(r[ix.L4]||"").trim(), l5:(ix.L5>=0?(r[ix.L5]||""):"").trim(),
+        etichetta:(ix.Etichetta>=0?(r[ix.Etichetta]||""):"").trim(),
+        note:(r[ix.Nota]||"").trim(),
+        splitMode:(r[ix.Split]||"").trim()||null,
+        splitPercent:parseInt(r[ix.Quota])||50,
+        createdBy:(r[ix.InseritoDa]||user).trim().toLowerCase(),
+      })).filter(x=>x.date&&x.amount>0);
+      setImp({name:file.name,recs});
+      say("Letto "+file.name+": "+recs.length+" righe");
+    }catch(err){ say("File non leggibile"); } };
+    r.readAsText(file);
+  };
+
+  const cancelRef=useRef(false);
+  const withTimeout=(p,ms,label)=>Promise.race([p,
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout: "+label)),ms))]);
+  const attesa=(ms)=>new Promise(r=>setTimeout(r,ms));
+
+  const doImport=async(sostituisci)=>{
+    if(!imp) return;
+    if(!navigator.onLine) return say("L'import richiede la connessione");
+    setConfermaImport(false);           // chiude subito la finestra di conferma
+    cancelRef.current=false;
+    detachTx();                          // stacco davvero l'ascolto, non solo lo ignoro
+    setBusy(true); setProg({fase:"preparo",fatti:0,tot:imp.recs.length});
+    try{
+      // 1) tassonomia: costruita a piccoli lotti, con pause, cosi' l'interfaccia resta viva
+      let cs=buildCats();
+      const gIndex=new Map(cs.groups.map(g=>[g.l2+"|"+g.name.toLowerCase(),g]));
+      const lIndex=new Map(cs.leaves.map(l=>[l.groupId+"|"+l.name.toLowerCase(),l]));
+      const sIndex=new Map(cs.subs.map(x=>[x.leafId+"|"+x.name.toLowerCase(),x]));
+      const docs=[];
+      const LOTTO=300;
+      for(let i=0;i<imp.recs.length;i++){
+        if(cancelRef.current) throw new Error("annullato");
+        const r=imp.recs[i];
+        const l2=["fisse","variabili","stipendio","altre_entrate"].includes(r.l2)?r.l2:(r.type==="income"?"altre_entrate":"variabili");
+        const l3n=(r.l3||"Altro"); const gk=l2+"|"+l3n.toLowerCase();
+        let g=gIndex.get(gk);
+        if(!g){ g={id:l2+"."+slug(l3n)+"_"+Math.random().toString(36).slice(2,7),
+          l1:(l2==="fisse"||l2==="variabili")?"spese":"entrate",l2,name:l3n,
+          icon:autoEmoji(l3n),archived:false}; cs.groups.push(g); gIndex.set(gk,g); }
+        let lf=null;
+        if(r.l4){ const lk=g.id+"|"+r.l4.toLowerCase(); lf=lIndex.get(lk);
+          if(!lf){ lf={id:g.id+"."+slug(r.l4)+"_"+Math.random().toString(36).slice(2,7),groupId:g.id,name:r.l4,archived:false};
+            cs.leaves.push(lf); lIndex.set(lk,lf); } }
+        let sb=null;
+        if(r.l5&&lf){ const sk=lf.id+"|"+r.l5.toLowerCase(); sb=sIndex.get(sk);
+          if(!sb){ sb={id:lf.id+"."+slug(r.l5)+"_"+Math.random().toString(36).slice(2,7),leafId:lf.id,name:r.l5,archived:false};
+            cs.subs.push(sb); sIndex.set(sk,sb); } }
+        docs.push({date:r.date,type:r.type,amount:r.amount,groupId:g.id,leafId:lf?lf.id:null,
+          subId:sb?sb.id:null,note:r.note,etichetta:r.etichetta,
+          shared:!!r.splitMode,splitMode:r.splitMode,splitPercent:r.splitPercent,
+          createdBy:USERS[r.createdBy]?r.createdBy:user,editedBy:null,source:"import"});
+        if(i%LOTTO===0){ setProg({fase:"preparo",fatti:i,tot:imp.recs.length}); await attesa(0); }
+      }
+
+      // 2) svuota, se richiesto: legge SEMPRE l'elenco vero dal server (mai la cache locale,
+      //    che potrebbe essere disallineata dopo operazioni fatte fuori dall'app)
+      if(sostituisci){
+        setProg({fase:"svuoto",fatti:0,tot:1});
+        const snap=await withTimeout(fb.getDocsFromServer(fb.collection(fb.db,"transactions")),45000,"lettura elenco da eliminare");
+        const idsDaEliminare=snap.docs.map(d=>d.id);
+        for(let i=0;i<idsDaEliminare.length;i+=300){
+          if(cancelRef.current) throw new Error("annullato");
+          setProg({fase:"svuoto",fatti:i,tot:idsDaEliminare.length});
+          const b=fb.writeBatch(fb.db);
+          idsDaEliminare.slice(i,i+300).forEach(id=>b.delete(fb.doc(fb.db,"transactions",id)));
+          await withTimeout(b.commit(),45000,"eliminazione lotto");
+        }
+      }
+
+      // 3) categorie, poi movimenti a lotti con tempo massimo
+      await withTimeout(fb.setDoc(fb.doc(fb.db,"meta","categories"),cs),45000,"categorie");
+      for(let i=0;i<docs.length;i+=300){
+        if(cancelRef.current) throw new Error("annullato");
+        setProg({fase:"carico",fatti:i,tot:docs.length});
+        const b=fb.writeBatch(fb.db);
+        docs.slice(i,i+300).forEach(d=>b.set(fb.doc(fb.collection(fb.db,"transactions")),d));
+        await withTimeout(b.commit(),45000,"caricamento lotto");
+      }
+      setProg({fase:"fatto",fatti:docs.length,tot:docs.length});
+      say("Importati "+docs.length+" movimenti"); setImp(null);
+    }catch(e){
+      const msg=String(e.message||e.code||e);
+      say(msg.includes("annullato")?"Import annullato":
+          msg.includes("timeout")?"Connessione troppo lenta, riprova ("+msg+")":
+          "Errore import: "+msg);
+    }
+    attachTx();                          // ricollego: un solo aggiornamento con il risultato finale
+    setBusy(false); setProg(null); cancelRef.current=false;
+  };
+
+    return (
+    <div style={{paddingTop:14}}>
+      <H>Dati e backup</H>
+      <Card>
+        <Row l="Movimenti in archivio" r={tx.length} />
+        <Row l="In attesa di sincronizzazione" r={tx.filter(t=>t.pending).length} />
+        <Row l="Etichette in uso" r={[...new Set(tx.map(t=>(t.etichetta||"").trim()).filter(Boolean))].length} />
+        <Row l="Stato" r={navigator.onLine?"connesso":"offline"} />
+        <div style={{marginTop:9}}><Btn kind="ghost" onClick={async()=>{
+          try{ const s=await fb.getCountFromServer(fb.collection(fb.db,"transactions"));
+            say("Sul server risultano "+s.data().count+" movimenti"); }
+          catch(e){ say("Non raggiungo il server: "+(e.code||e.message)); } }}>Verifica quanti movimenti ci sono sul server</Btn></div>
+        <Row l="Ultimo backup" r={config.lastBackup||"mai"} />
+        <div style={{marginTop:10}}><Btn onClick={doBackup}>Backup database</Btn></div>
+        <div style={{fontSize:11.5,color:T.muted,marginTop:8,lineHeight:1.5}}>Genera il JSON completo e apre la condivisione. Scegli Mail e invialo a te stesso.</div>
+      </Card>
+      <H>Export</H>
+      <Card>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          <Btn kind="ghost" onClick={()=>exportCSV(true)}>Esporta tutto il database in CSV</Btn>
+          <Btn kind="ghost" onClick={()=>exportCSV(false)}>Esporta solo la tua quota</Btn>
+        </div>
+      </Card>
+      <H>Import CSV</H>
+      <Card>
+        <input type="file" accept=".csv,text/csv" onChange={onFile} style={{fontSize:13}} />
+        {imp && (<div style={{marginTop:10}}>
+          <div style={{fontSize:12.5,color:T.muted,marginBottom:9}}>{imp.name} · <b>{imp.recs.length}</b> righe pronte.
+            Le categorie mancanti vengono create in automatico.</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <Btn kind="ghost" disabled={busy} onClick={()=>doImport(false)}>Aggiungi ai movimenti esistenti</Btn>
+            <Btn kind="danger" disabled={busy} onClick={apriConferma}>Sostituisci tutto l'archivio</Btn>
+          </div>
+        </div>)}
+        {busy && prog && (
+          <div style={{marginTop:12}}>
+            <div style={{fontSize:12.5,color:T.brand,fontWeight:700,marginBottom:5}}>
+              {({preparo:"Preparo le categorie…",svuoto:"Svuoto l'archivio…",carico:"Carico i movimenti…",fatto:"Fatto"})[prog.fase]}
+              {" "}{prog.fatti} / {prog.tot}
+            </div>
+            <div style={{background:T.bg,borderRadius:8,height:8,overflow:"hidden"}}>
+              <div style={{background:T.brand,height:"100%",width:(prog.tot?Math.min(100,Math.round(prog.fatti/prog.tot*100)):0)+"%",transition:"width .2s"}} />
+            </div>
+            <div style={{marginTop:9}}><Btn kind="ghost" onClick={()=>{cancelRef.current=true;}}>Annulla import</Btn></div>
+          </div>
+        )}
+        <div style={{fontSize:11.5,color:T.muted,marginTop:8,lineHeight:1.5}}>
+          Colonne attese: Data, Tipo, Importo, L2, L3, L4, L5, Etichetta, Nota, Split, Quota, InseritoDa. Separatore punto e virgola.</div>
+      </Card>
+
+      {confermaImport && !busy && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:95,display:"flex",alignItems:"center",justifyContent:"center",padding:18}}>
+          <Card style={{maxWidth:360}}>
+            <div style={{fontSize:16,fontWeight:800,marginBottom:8}}>Sostituire tutto?</div>
+            <div style={{fontSize:14,lineHeight:1.5,marginBottom:14}}>
+              Verranno eliminati i <b>{nServer===null?"…":nServer}</b> movimenti attuali e caricati i <b>{imp?imp.recs.length:0}</b> del file.
+              Anche le categorie tornano a quelle predefinite. Fai prima un backup.</div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn kind="ghost" onClick={()=>setConfermaImport(false)}>Annulla</Btn>
+              <Btn kind="danger" onClick={()=>doImport(true)}>Sostituisci</Btn>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <H>Foto dell'intestazione</H>
+      <Card>
+        <div style={{fontSize:12.5,color:T.muted,lineHeight:1.5,marginBottom:9}}>Condivisa: la stessa foto compare a te e a {USERS[other(user)]}. Viene ridimensionata automaticamente.</div>
+        {photo && <img src={photo} alt="" style={{width:"100%",height:110,objectFit:"cover",borderRadius:10,marginBottom:9}} />}
+        <input type="file" accept="image/*" onChange={onPhoto} style={{fontSize:13}} />
+        {photo && <div style={{marginTop:9}}><Btn kind="danger" onClick={()=>{try{fb.setDoc(fb.doc(fb.db,"meta","photo"),{dataUrl:null}).catch(e=>say("Non sincronizzato: "+(e.code||e.message)));say("Foto rimossa");}catch(e){say("Errore: "+(e.code||e.message));}}}>Rimuovi foto</Btn></div>}
+      </Card>
+
+      <H>Aggiornamenti</H>
+      <Card style={{marginBottom:10}}>
+        <Row l="Versione installata" r={APP_VERSION} />
+        <div style={{marginTop:9,display:"flex",flexDirection:"column",gap:8}}>
+          <Btn kind="ghost" onClick={()=>{
+            const u=location.href.split("#")[0].split("?")[0]+"?v="+Date.now();
+            location.replace(u);}}>Cerca aggiornamenti</Btn>
+        </div>
+        <div style={{fontSize:11.5,color:T.muted,marginTop:8,lineHeight:1.5}}>Se dopo un aggiornamento del codice la versione non cambia, premi Cerca aggiornamenti.</div>
+      </Card>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+})();
+</script>
+</body>
+</html>
