@@ -1,0 +1,144 @@
+# Spendometro
+
+App di famiglia per la gestione delle spese condivise, sviluppata per due persone (Pierangelo e Martina) con estensione a spese di gruppo con terzi. Progressive Web App a file singolo, nessun passaggio di build, hosting su GitHub Pages.
+
+**In uso su:** `https://pierangelogobbo1986.github.io/Spendometro/`
+
+**Versione corrente:** 3.10.3
+
+---
+
+## Cos'è
+
+Un ibrido fra Splitwise e Spendee: tiene traccia delle spese personali e condivise di una coppia, calcola in tempo reale chi deve cosa a chi, gestisce spese ricorrenti automatiche, e permette di dividere spese occasionali anche con persone esterne (per esempio durante un viaggio di gruppo), senza che queste ultime abbiano bisogno di un account.
+
+## Stack tecnico
+
+- **Frontend**: React 18 caricato da CDN, JSX trasformato al volo con Babel standalone. Nessun bundler, nessun passaggio di build: si modifica `index.html` e si carica direttamente.
+- **Backend**: Firebase Firestore (piano gratuito Spark) per i dati, Firebase Authentication (email/password) per l'accesso.
+- **Cache**: `persistentLocalCache` con `persistentMultipleTabManager`, quindi l'app funziona offline e sincronizza al ritorno della rete.
+- **Export**: SheetJS (xlsx) via CDN per la generazione dei report in Excel, interamente lato client.
+- **Hosting**: GitHub Pages, servito direttamente dalla root del branch principale.
+- **PWA**: installabile su iPhone e Android da browser ("Aggiungi a Home"), con manifest e icone dedicate.
+
+## Funzionalità principali
+
+**Spese e entrate**
+- Inserimento rapido con calcolatrice integrata (supporta espressioni matematiche)
+- Categorie a cinque livelli (L1 spese/entrate, L2 fisse/variabili/stipendio/altre entrate, L3/L4/L5 personalizzabili), con emoji automatica
+- Etichette libere con autocompletamento, utili per raggruppare spese di viaggi o eventi
+- Spese condivise al 50% o in percentuale personalizzata con l'altro utente, con calcolo automatico del saldo reciproco (Conguaglio)
+- Spese condivise con persone esterne (terzi): pagina dedicata e separata dalla schermata Spese, con gestione delle persone, calcolo dei debiti incrociati organizzato per persona, ed elenco dei movimenti con l'importo totale della spesa di gruppo. È un registro puramente di calcolo: non genera movimenti automatici, la spesa realmente sostenuta va registrata a mano nella schermata Spese, normale o condivisa con l'altro utente a seconda dei casi
+
+**Spese ricorrenti**
+- Cadenza settimanale, mensile o annuale, con data di fine facoltativa
+- Generazione automatica delle occorrenze mancanti all'apertura dell'app (fino a un tetto di 24 per regola, per evitare raffiche eccessive dopo una lunga inattività), con identificativi deterministici che evitano doppioni anche aprendo l'app da più dispositivi
+- Visibilità filtrata: ciascun utente vede le proprie regole e quelle condivise dall'altro, non quelle personali altrui
+
+**Notifiche in app**
+
+Non sono notifiche push di sistema: sono banner che compaiono in cima alla schermata principale quando si apre l'app. Il telefono chiuso non suona, la segnalazione si vede al primo accesso utile. Esistono due banner distinti, entrambi simmetrici fra i due utenti, quindi ciascuno vede le azioni dell'altro allo stesso modo.
+
+- **Banner occorrenze generate**: elenca le spese ricorrenti create in automatico dal motore all'apertura dell'app. La generazione gira su tutte le regole, comprese quelle personali dell'altro utente, perché qualcuno deve pur generarle anche se l'altro non apre l'app per settimane. Il banner però mostra solo ciò che ti riguarda, cioè le tue regole e quelle condivise.
+- **Banner eventi dell'altro utente**: segnala inserimenti, modifiche ed eliminazioni fatte dall'altro sulle spese condivise della schermata Spese. Restano escluse le spese della pagina Terzi, che hanno già un proprio riepilogo dedicato.
+
+Le tue azioni non notificano mai te stesso. Il meccanismo si appoggia a un registro degli identificativi appena toccati in locale (`marcaLocale`), che il motore di confronto (`diffEventi`) consuma in silenzio invece di trasformarli in eventi.
+
+**Foto dell'intestazione**
+
+Una galleria condivisa di massimo 10 foto, gestibile da entrambi gli utenti nella schermata Impostazioni/Dati. Ogni giorno l'intestazione mostra la "foto del giorno": l'indice si calcola dalla data (`Math.floor(giorni dall'epoca/864e5) % numero di foto`), quindi è identico per entrambi gli utenti senza bisogno di scrivere nulla in più su Firestore, e cambia da solo a mezzanotte. Ogni foto vive nel proprio documento della collection `header_photos`, perché un solo documento Firestore non basterebbe a contenerle tutte e dieci sotto il limite di 1 MB.
+
+**Report**
+- Grafici a istogrammi scorrevoli per fisse/variabili/entrate, patrimoni, differenza entrate-uscite, selezionabili per mese o anno
+- Analisi per categoria con selezione multipla a qualsiasi livello della tassonomia, confronto fianco a fianco, filtro per etichetta
+- Rilevazioni patrimoniali (conti bancari e di investimento) con andamento storico
+- Esportazione in Excel con un foglio per sezione, numeri nativi pronti per calcoli e grafici personalizzati
+
+**Categorie**
+- Struttura a cinque livelli, completamente personalizzabile su L3/L4/L5
+- Rinomina retroattiva: cambiare il nome di una categoria aggiorna automaticamente tutto lo storico
+- Archiviazione delle voci non più in uso senza perdere lo storico collegato
+
+**Dati e backup**
+- Backup manuale in formato JSON, condivisibile via email
+- Import ed esportazione completa in CSV
+- Lavoro offline con sincronizzazione automatica al ritorno della rete
+
+## Struttura del progetto
+
+```
+index.html          — l'intera applicazione (markup, stile, logica)
+manifest.json        — manifest PWA
+icon-*.png            — icone per l'installazione come app
+```
+
+Non ci sono altri file sorgente: tutto il codice, compresi gli stili e i componenti React, vive in `index.html`.
+
+## Modello dati (Firestore)
+
+| Collection | Contenuto |
+|---|---|
+| `transactions` | Movimenti di spesa/entrata, personali o condivisi |
+| `settlements` | Conguagli registrati fra i due utenti (o fra un utente e una persona esterna) |
+| `balances` | Rilevazioni periodiche dei patrimoni (conti bancari e investimenti) |
+| `recurring` | Regole di spesa ricorrente |
+| `esterni` | Persone esterne coinvolte in spese di gruppo |
+| `condivisioni` | Registro delle spese condivise con terzi: chi ha pagato, chi partecipava, quota a testa |
+| `header_photos` | Galleria di foto per l'intestazione (fino a 10), una per documento: "foto del giorno" |
+| `meta/categories` | Tassonomia delle categorie a cinque livelli |
+| `meta/config` | Configurazione generale (backup, ecc.) |
+
+Le spese condivise con terzi vivono in un registro isolato, del tutto separato dalle spese vere. Il registro `condivisioni` calcola in automatico chi deve cosa a chi (te, l'altro utente e le persone esterne coinvolte), ma non genera mai un movimento in `transactions`: quanto effettivamente speso va registrato a mano nella schermata Spese, come una spesa normale o condivisa con l'altro utente. Questa separazione evita la complessità di tenere sincronizzate due rappresentazioni della stessa spesa, al costo di dover registrare la propria quota reale manualmente dopo aver fatto i calcoli di gruppo.
+
+## Sviluppo
+
+Non serve alcun ambiente di sviluppo: `index.html` è autosufficiente. Per lavorarci:
+
+1. Modifica `index.html` direttamente.
+2. Apri il file in un browser per testare in locale, oppure carica su GitHub Pages per testare come PWA.
+3. Aggiorna la costante `APP_VERSION` a ogni modifica pubblicata, così l'app può segnalare quando è disponibile una versione più recente.
+
+Per pubblicare, è sufficiente un commit e push sul branch servito da GitHub Pages.
+
+### Controlli prima di pubblicare
+
+Il codice vive in un solo file trasformato da Babel a runtime, quindi un errore di riferimento non si manifesta al caricamento ma soltanto quando l'utente tocca la funzione interessata. Conviene perciò passare qualche controllo automatico prima di ogni commit, estraendo il blocco `<script type="text/babel">` in un file `.jsx` temporaneo:
+
+- **Sintassi**: `npx esbuild@0.21.5 app.jsx --loader:.jsx=jsx --outfile=/tmp/out.js`
+- **Variabili non definite e regole React**: ESLint con la regola `no-undef`, parser `@babel/eslint-parser`, `eslint-plugin-react` ed `eslint-plugin-react-hooks` (`rules-of-hooks`, `jsx-key`). Il risultato atteso è zero errori e zero avvisi. È il controllo che intercetta i casi in cui un componente usa una prop che nessuno gli ha passato.
+- **Coerenza delle props**: confronto fra le props passate nei call site `<Componente {...{...}} />` e quelle destrutturate nella firma del componente ricevente, nei due versi. Le props passate e non ricevute vengono ignorate in silenzio, quelle attese e non passate arrivano come `undefined`: nessuno dei due casi produce un errore visibile, quindi vanno cercati apposta.
+
+Per modificare `index.html` da script, la sostituzione di stringhe in Python con un `assert` prima di ogni `replace` è il metodo più affidabile: se il codice atteso non è più quello, lo script si ferma invece di corrompere il file in silenzio.
+
+## Storico versioni
+
+**3.10.3**
+- Revisione generale del codice, nessun cambiamento di comportamento. Il calcolo della "foto del giorno", prima duplicato fra intestazione e schermata Impostazioni, vive ora in un'unica funzione (`indiceFotoDelGiorno`), così le due parti non possono divergere. Resi espliciti con il prefisso `_` i campi scartati di proposito prima del salvataggio su Firestore. Il codice passa ora ESLint senza alcun avviso, comprese le regole sugli hook React e sulle `key` delle liste.
+
+**3.10.2**
+- Ordine delle spese a parità di giorno: prima non era né "ultima caricata sopra" né alfabetico, ma l'ordine (di fatto arbitrario) in cui Firestore restituisce i documenti quando non gli si chiede esplicitamente un ordinamento. Ora, a parità di data, viene messa sopra quella inserita per ultima; una spesa appena registrata resta in cima anche nell'istante prima che la sincronizzazione col server sia confermata. Le spese importate in blocco dal vecchio Spendee, non avendo un orario di inserimento reale (sono arrivate tutte insieme), restano fra loro nell'ordine in cui già erano: non c'è modo di stabilire quale fosse "più recente". Corretto nell'elenco spese della schermata principale e, per coerenza, nella stessa identica lista che compare toccando un periodo nell'Analisi per categoria del Report, foglio Excel di quell'analisi compreso.
+
+**3.10.1**
+- Selezione multipla per la galleria dell'intestazione: dalla libreria del telefono si possono scegliere più foto in un colpo solo (fino a quante ne restano libere sulle 10), invece di caricarle una a una.
+- Foto dell'intestazione più chiara: si sommavano un'opacità ridotta sull'immagine e un velo scuro sopra, appiattendo troppo i colori. Tolta la prima, ammorbidito il secondo.
+
+**3.10.0**
+- Foto dell'intestazione: da una singola foto fissa a una galleria condivisa di massimo 10, con "foto del giorno" che cambia da sola a mezzanotte, uguale per entrambi gli utenti. La schermata Impostazioni/Dati ha ora una griglia di miniature al posto del singolo upload, con la foto di oggi evidenziata da un bordo. Cambiato il modello dati: da un unico documento `meta/photo` a una collection `header_photos` con un documento per foto, perché dieci immagini insieme supererebbero il limite di 1 MB per documento Firestore. La vecchia foto in `meta/photo`, se presente, non passa automaticamente alla nuova galleria: va ricaricata come una delle dieci.
+
+**3.9.5**
+- Tastierino numerico più reattivo. Su iOS il browser attende, per ogni tocco su un pulsante, che finisca il gesto prima di generare l'evento `click`, per distinguere un tap da un tentativo di doppio tap per zoomare: è quell'attesa a dare la sensazione di dover premere più volte perché il numero entri. I tasti ora rispondono al contatto del dito (`onPointerDown`) invece che al `click` sintetico, con feedback visivo istantaneo; il mouse continua a usare il click nativo, più affidabile anche per tastiera e screen reader. Passato inoltre `setExpr` alla forma funzionale, così tap ravvicinati non rischiano di perdere una cifra per effetto di un aggiornamento di stato non ancora concluso.
+
+**3.9.4**
+- Corretti i quadratini colorati nelle legende dei grafici delle sezioni 1, 3 e 4 del Report: erano scritti come carattere di testo "■", che ereditava il grigio del testo circostante invece del colore reale della barra corrispondente. Ora sono veri quadratini colorati, coerenti con quanto già accadeva nella sezione 2 (patrimoni).
+
+**3.9.3**
+- Corretta la legenda del grafico in "4 · Analisi per categoria": mostrava sempre il totale su tutto il periodo visualizzato, anche dopo aver toccato una colonna per vedere un mese o un anno specifico. Ora, con un periodo selezionato, mostra il totale di quella sola colonna, con un'etichetta che chiarisce a cosa si riferisce il numero. Il totale generale resta invariato e disponibile per l'esportazione Excel.
+
+**3.9.2**
+- Corretto `ReferenceError: can't find variable: marcaLocale`. La prop non veniva passata da `App` a `Home`, che però la girava a `RecurringCard`: l'eliminazione di una regola ricorrente dalla schermata principale andava in errore e non veniva eseguita.
+- Rimosse due funzioni mai chiamate (`saldoConPersona`, `riepilogoEtichetta`), residui del vecchio impianto delle spese con terzi, superate da `nettaDebiti` e `debitiPerPersona`.
+- Rimosse sei props dichiarate e mai usate in `SpeseTerziPage`, `AnalisiCategoria` e `SchermataDati`, insieme alla funzione locale `shortLab` rimasta orfana.
+
+## Note
+
+Progetto a uso privato di due persone, non pensato per un pubblico più ampio: alcune scelte progettuali (nomi utente fissi, assenza di un vero sistema multi-tenant) riflettono questo utilizzo specifico.
