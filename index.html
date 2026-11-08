@@ -14,7 +14,10 @@
 <meta name="apple-mobile-web-app-title" content="Spendometro" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
 <style>
-  html,body{margin:0;padding:0;background:#EDF0F3;-webkit-text-size-adjust:100%;}
+  /* Sfondo della pagina = blu dell'intestazione: iOS 26 ignora theme-color e colora la barra di stato
+     con lo sfondo di body. Con il grigio delle schermate la barra veniva bianca. Il grigio resta
+     sul contenitore dell'app, che copre tutta l'altezza della finestra. */
+  html,body{margin:0;padding:0;background:#1F3A5F;-webkit-text-size-adjust:100%;}
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#101820;overscroll-behavior-y:contain;}
   *{-webkit-tap-highlight-color:transparent;}
   input,select,textarea,button{font-family:inherit;}
@@ -134,7 +137,7 @@ function debitiPerPersona(docs){
     .sort((a,b)=>ordine(a)-ordine(b)||a.localeCompare(b));
   return persone.map(p=>({nome:p,voci:risultati.filter(r=>r.da===p)})).filter(x=>x.voci.length>0);
 }
-const APP_VERSION = "3.11.0";
+const APP_VERSION = "3.11.1";
 const BACKUP_EMAIL_DEFAULT = ""; // impostato dall'app, non nel codice pubblico
 const other = (u) => (u === "pierangelo" ? "martina" : "pierangelo");
 
@@ -830,9 +833,9 @@ function App(){
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:fotoDelGiorno?"0 1px 6px rgba(0,0,0,.5)":"none"}}>Spendometro</div>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <button onClick={()=>fb.signOut(fb.auth)} style={{background:fotoDelGiorno?"rgba(16,24,32,.55)":"#33547C",color:"#fff",border:"none",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600,backdropFilter:"blur(4px)"}}>{USERS[user]}</button>
+                <button onClick={()=>fb.signOut(fb.auth)} style={{background:fotoDelGiorno?"rgba(16,24,32,.62)":"#33547C",color:"#fff",border:"none",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600}}>{USERS[user]}</button>
                 <button onClick={manualRefresh} disabled={refreshing} aria-label="Aggiorna"
-                  style={{background:fotoDelGiorno?"rgba(16,24,32,.55)":"#33547C",border:"none",width:32,height:32,borderRadius:16,padding:0,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)",flex:"0 0 auto"}}>
+                  style={{background:fotoDelGiorno?"rgba(16,24,32,.62)":"#33547C",border:"none",width:32,height:32,borderRadius:16,padding:0,display:"flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto"}}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
                     style={{display:"block",transition:"transform .6s linear",transform:refreshing?"rotate(360deg)":"rotate(0deg)"}}>
                     <path d="M20 11a8 8 0 1 0-2.3 5.7"/>

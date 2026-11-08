@@ -4,7 +4,7 @@ App di famiglia per la gestione delle spese condivise, sviluppata per due person
 
 **In uso su:** `https://pierangelogobbo1986.github.io/Spendometro/`
 
-**Versione corrente:** 3.11.0
+**Versione corrente:** 3.11.1
 
 ---
 
@@ -19,7 +19,7 @@ Un ibrido fra Splitwise e Spendee: tiene traccia delle spese personali e condivi
 - **Cache**: `persistentLocalCache` con `persistentMultipleTabManager`, quindi l'app funziona offline e sincronizza al ritorno della rete.
 - **Export**: SheetJS (xlsx) via CDN per la generazione dei report in Excel, interamente lato client.
 - **Hosting**: GitHub Pages, servito direttamente dalla root del branch principale.
-- **PWA**: installabile su iPhone e Android da browser ("Aggiungi a Home"), con manifest e icone dedicate. Sulla Home la barra di stato resta sopra la pagina, opaca e del colore di `theme-color` (nessuno stile `black-translucent`): con quello stile iOS 26.1 e successivi disegnano una sfumatura scura sopra la parte alta dell'app. L'altezza della pagina segue quella reale della finestra (`--app-h`), perché `100vh` può includere la barra di stato.
+- **PWA**: installabile su iPhone e Android da browser ("Aggiungi a Home"), con manifest e icone dedicate. Sulla Home la barra di stato resta sopra la pagina, opaca e del colore di `theme-color` (nessuno stile `black-translucent`): con quello stile iOS 26.1 e successivi disegnano una sfumatura scura sopra la parte alta dell'app. L'altezza della pagina segue quella reale della finestra (`--app-h`), perché `100vh` può includere la barra di stato. iOS 26 ignora `theme-color` e colora la barra di stato con lo sfondo di `body`, per questo `html` e `body` hanno il blu dell'intestazione e il grigio delle schermate sta sul contenitore dell'app. In cima alla pagina non si usa `backdrop-filter`, perché Safari ci disegna sopra la sua sfumatura.
 
 ## Funzionalità principali
 
@@ -113,6 +113,9 @@ Il codice vive in un solo file trasformato da Babel a runtime, quindi un errore 
 Per modificare `index.html` da script, la sostituzione di stringhe in Python con un `assert` prima di ogni `replace` è il metodo più affidabile: se il codice atteso non è più quello, lo script si ferma invece di corrompere il file in silenzio.
 
 ## Storico versioni
+
+**3.11.1**
+- Completata la correzione della banda in alto, allineandola a Euteria. iOS 26 colora la barra di stato con lo sfondo della pagina e non con `theme-color`: lo sfondo era il grigio chiaro delle schermate, da cui la banda bianca. Ora lo sfondo di `html` e `body` è il blu dell'intestazione, mentre il grigio resta sul contenitore dell'app. Tolta anche la sfocatura (`backdrop-filter`) dai pulsanti nell'intestazione, su cui Safari disegnava la sua sfumatura.
 
 **3.11.0**
 - Barra di stato sull'app installata: tolto lo stile `black-translucent`, con cui iOS 26.1 e successivi disegnano una banda sfumata sopra la parte alta dell'app che nessun codice della pagina può rimuovere. Ora la barra di stato è opaca, blu come l'intestazione, e la pagina parte sotto di essa. È la stessa soluzione adottata in Euteria. iOS legge questa impostazione solo quando l'app viene aggiunta alla Home: chi l'aveva installata prima deve eliminarla e aggiungerla di nuovo da Safari, e in quel caso la schermata Spese mostra un avviso. I dati restano su Firestore, quindi basta rifare l'accesso.
