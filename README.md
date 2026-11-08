@@ -4,7 +4,7 @@ App di famiglia per la gestione delle spese condivise, sviluppata per due person
 
 **In uso su:** `https://pierangelogobbo1986.github.io/Spendometro/`
 
-**Versione corrente:** 3.11.2
+**Versione corrente:** 3.11.3
 
 ---
 
@@ -19,7 +19,7 @@ Un ibrido fra Splitwise e Spendee: tiene traccia delle spese personali e condivi
 - **Cache**: `persistentLocalCache` con `persistentMultipleTabManager`, quindi l'app funziona offline e sincronizza al ritorno della rete.
 - **Export**: SheetJS (xlsx) via CDN per la generazione dei report in Excel, interamente lato client.
 - **Hosting**: GitHub Pages, servito direttamente dalla root del branch principale.
-- **PWA**: installabile su iPhone e Android da browser ("Aggiungi a Home"), con manifest e icone dedicate. Sulla Home la barra di stato resta sopra la pagina, opaca e del colore di `theme-color` (nessuno stile `black-translucent`): con quello stile iOS 26.1 e successivi disegnano una sfumatura scura sopra la parte alta dell'app. L'altezza della pagina segue quella reale della finestra (`--app-h`), perché `100vh` può includere la barra di stato. iOS 26 ignora `theme-color` e colora la barra di stato con lo sfondo di `body`, per questo `html` e `body` hanno il blu dell'intestazione e il grigio delle schermate sta sul contenitore dell'app. In cima alla pagina non si usa `backdrop-filter`, perché Safari ci disegna sopra la sua sfumatura. La sfumatura che iOS disegna sotto la barra di stato c'è comunque, del colore dello sfondo: per questo in cima c'è una barra a tinta unita dello stesso blu, con il nome e i pulsanti, alta abbastanza da coprirla, e la foto del giorno sta subito sotto. Come in Euteria, la sfumatura blu sul blu non si vede.
+- **PWA**: installabile su iPhone e Android da browser ("Aggiungi a Home"), con manifest e icone dedicate. Sulla Home la barra di stato resta sopra la pagina, opaca e del colore di `theme-color` (nessuno stile `black-translucent`): con quello stile iOS 26.1 e successivi disegnano una sfumatura scura sopra la parte alta dell'app. L'altezza della pagina segue quella reale della finestra (`--app-h`), perché `100vh` può includere la barra di stato. iOS 26 ignora `theme-color` e colora la barra di stato con lo sfondo di `body`, per questo `html` e `body` hanno il blu dell'intestazione e il grigio delle schermate sta sul contenitore dell'app. In cima alla pagina non si usa `backdrop-filter`, perché Safari ci disegna sopra la sua sfumatura. Sotto la barra di stato Safari disegna comunque una sfumatura che scende per circa 40 punti sulla pagina, a meno che trovi in cima un "contenitore fisso" (WebKit, `LocalFrameView::fixedContainerEdges`): un elemento `position: fixed` o `sticky` che contenga il punto 4 px sotto il bordo alto al centro, largo almeno il 90% della finestra, alto più di 10 px, senza `backdrop-filter` e con un colore di sfondo semplice (non un'immagine). In quel caso Safari colora la barra di stato con quel colore e non disegna la sfumatura. In Euteria quel ruolo lo svolge la barra in alto, sticky e opaca. In Spendometro lo svolge `#bordo-alto`, una striscia fissa di 12 px in cima alla pagina, con `pointer-events: none` e uno sfondo blu al 4%: Safari fonde un colore semitrasparente con lo sfondo della pagina, quindi la barra di stato viene blu pieno, mentre a occhio la striscia non si vede. Così la foto del giorno può partire dal bordo alto della pagina. Non va tolta, e non va spostata dentro un elemento con `transform` (smetterebbe di essere fissa rispetto alla finestra).
 
 ## Funzionalità principali
 
@@ -48,7 +48,7 @@ Le tue azioni non notificano mai te stesso. Il meccanismo si appoggia a un regis
 
 Una galleria condivisa di massimo 10 foto, gestibile da entrambi gli utenti nella schermata Impostazioni/Dati. Ogni giorno l'intestazione mostra la "foto del giorno": l'indice si calcola dalla data (`Math.floor(giorni dall'epoca/864e5) % numero di foto`), quindi è identico per entrambi gli utenti senza bisogno di scrivere nulla in più su Firestore, e cambia da solo a mezzanotte. Ogni foto vive nel proprio documento della collection `header_photos`, perché un solo documento Firestore non basterebbe a contenerle tutte e dieci sotto il limite di 1 MB.
 
-Ogni foto ha la propria inquadratura, condivisa fra i due utenti: toccando una miniatura si apre un editor con un'anteprima grande quanto la striscia della foto nell'intestazione, dove si trascina con un dito, si ingrandisce con due dita o con il cursore (da 1× a 4×) e si salva. L'originale resta intatto: il documento salva solo il campo `crop` = `{x, y, z}`, cioè il punto da tenere a fuoco in percentuale e l'ingrandimento. Intestazione, miniature ed editor disegnano la foto con la stessa funzione (`stileInquadratura`: `object-fit: cover`, `object-position` e una scala attorno allo stesso punto), così l'anteprima coincide con il risultato. Le foto vengono salvate fino a 1600 pixel sul lato lungo, per lasciare margine all'ingrandimento.
+Ogni foto ha la propria inquadratura, condivisa fra i due utenti: toccando una miniatura si apre un editor con un'anteprima grande quanto l'intestazione, dove si trascina con un dito, si ingrandisce con due dita o con il cursore (da 1× a 4×) e si salva. L'originale resta intatto: il documento salva solo il campo `crop` = `{x, y, z}`, cioè il punto da tenere a fuoco in percentuale e l'ingrandimento. Intestazione, miniature ed editor disegnano la foto con la stessa funzione (`stileInquadratura`: `object-fit: cover`, `object-position` e una scala attorno allo stesso punto), così l'anteprima coincide con il risultato. Le foto vengono salvate fino a 1600 pixel sul lato lungo, per lasciare margine all'ingrandimento.
 
 **Report**
 - Grafici a istogrammi scorrevoli per fisse/variabili/entrate, patrimoni, differenza entrate-uscite, selezionabili per mese o anno
@@ -113,6 +113,11 @@ Il codice vive in un solo file trasformato da Babel a runtime, quindi un errore 
 Per modificare `index.html` da script, la sostituzione di stringhe in Python con un `assert` prima di ogni `replace` è il metodo più affidabile: se il codice atteso non è più quello, lo script si ferma invece di corrompere il file in silenzio.
 
 ## Storico versioni
+
+**3.11.3**
+- Sfumatura sotto la barra di stato risolta alla radice. Dal codice di WebKit: Safari la disegna sempre, salvo quando trova in cima alla pagina un elemento fisso, largo quanto la finestra, alto più di 10 px e con un colore di sfondo, di cui usa il colore per la barra di stato. Euteria lo ha perché la sua barra in alto è sticky; l'intestazione di Spendometro scorre con la pagina, perciò la sfumatura restava, sulla foto nella 3.11.1 e sopra il nome nella 3.11.2. Aggiunta la striscia fissa `#bordo-alto` (12 px, blu al 4%, invisibile), che soddisfa quelle condizioni.
+- Intestazione di nuovo con la foto fino in alto, dietro al nome e ai pulsanti, come prima della 3.11.2. Tolta la velatura scura sulla foto, che da sola sembrava una sfumatura: il nome resta leggibile grazie a un'ombra sul testo.
+- L'anteprima dell'editor di inquadratura mostra di nuovo il nome sopra la foto, come l'intestazione.
 
 **3.11.2**
 - Intestazione divisa in due: in alto una barra blu a tinta unita con il nome e i pulsanti, sotto la foto del giorno, intera e senza velature scure. La sfumatura che iOS 26 disegna sotto la barra di stato cade così sul blu e non si vede, come in Euteria. Prima cadeva sulla foto.

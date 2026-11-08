@@ -33,6 +33,15 @@
      applica UNA sola volta, qui, e non deve essere sommato altrove. */
   #barra{position:fixed;bottom:0;left:0;right:0;z-index:60;transform:translateZ(0);
     padding-bottom:env(safe-area-inset-bottom);box-sizing:border-box;}
+  /* Bordo alto per Safari (iOS 26 e successivi). Sotto la barra di stato Safari disegna una sfumatura,
+     a meno che 4 px sotto il bordo alto, al centro, trovi un elemento position:fixed o sticky largo
+     almeno il 90% della finestra, alto piu' di 10 px e con un colore di sfondo: in quel caso colora
+     la barra di stato con quel colore e la sfumatura sparisce (WebKit, LocalFrameView::fixedContainerEdges).
+     Un colore semitrasparente viene fuso con lo sfondo della pagina (il blu di body), quindi la barra
+     di stato resta blu pieno mentre la striscia, al 4%, non si vede sopra la foto. Basta un colore non nullo:
+     la soglia del 10% di WebKit riguarda la proprieta' opacity dell'elemento (lasciata a 1), non lo sfondo.
+     In Euteria fa lo stesso lavoro la barra in alto, che e' sticky e opaca. */
+  #bordo-alto{position:fixed;top:0;left:0;right:0;height:12px;background:rgba(31,58,95,.04);z-index:65;pointer-events:none;}
   /* il campo data su iOS non si restringe da solo */
   input[type="date"]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;display:block;}
   @media print{ .tabscroll{max-height:none!important;overflow:visible!important;} }
@@ -90,6 +99,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
+<div id="bordo-alto" aria-hidden="true"></div>
 <div id="root"></div>
 
 <script type="text/babel" data-presets="react">
@@ -137,7 +147,7 @@ function debitiPerPersona(docs){
     .sort((a,b)=>ordine(a)-ordine(b)||a.localeCompare(b));
   return persone.map(p=>({nome:p,voci:risultati.filter(r=>r.da===p)})).filter(x=>x.voci.length>0);
 }
-const APP_VERSION = "3.11.2";
+const APP_VERSION = "3.11.3";
 const BACKUP_EMAIL_DEFAULT = ""; // impostato dall'app, non nel codice pubblico
 const other = (u) => (u === "pierangelo" ? "martina" : "pierangelo");
 
@@ -164,6 +174,7 @@ const INQ_BASE={x:50,y:50,z:1};
 const stileInquadratura=(c)=>{ const {x,y,z}={...INQ_BASE,...(c||{})};
   return {objectFit:"cover",objectPosition:x+"% "+y+"%",transform:"scale("+z+")",transformOrigin:x+"% "+y+"%"}; };
 const ALTEZZA_INTESTAZIONE=128;
+const OMBRA_TITOLO="0 1px 2px rgba(0,0,0,.45), 0 1px 10px rgba(0,0,0,.55)";   // nome leggibile sulla foto senza velature
 
 const creatoMs=(t)=> t.createdAt && t.createdAt.toMillis ? t.createdAt.toMillis() : (t.pending ? Infinity : 0);
 const slug=(s)=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
@@ -814,30 +825,27 @@ function App(){
     <Guard>
     <div style={{background:T.bg,minHeight:"var(--app-h,100dvh)"}}>
       <div style={{maxWidth:480,margin:"0 auto",paddingBottom:view==="add"?24:(locked?16:96)}}>
-        {/* Barra in alto a tinta unita, dello stesso blu dello sfondo della pagina: iOS 26 disegna sotto la
-            barra di stato una sfumatura del colore di sfondo, che sul blu non si vede e su una foto si'.
-            Stessa struttura di Euteria. La foto del giorno sta subito sotto, intera e senza velature. */}
-        <div style={{background:T.brand}}>
-          <div style={{paddingTop:"calc(12px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:16,
-            display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5}}>Spendometro</div>
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <button onClick={()=>fb.signOut(fb.auth)} style={{background:"#33547C",color:"#fff",border:"none",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600}}>{USERS[user]}</button>
-              <button onClick={manualRefresh} disabled={refreshing} aria-label="Aggiorna"
-                style={{background:"#33547C",border:"none",width:32,height:32,borderRadius:16,padding:0,display:"flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto"}}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
-                  style={{display:"block",transition:"transform .6s linear",transform:refreshing?"rotate(360deg)":"rotate(0deg)"}}>
-                  <path d="M20 11a8 8 0 1 0-2.3 5.7"/>
-                  <path d="M20 5v6h-6"/>
-                </svg>
-              </button>
+        {/* Intestazione: la foto del giorno parte dal bordo alto della pagina, con nome e pulsanti sopra.
+            Nessuna velatura scura: il nome resta leggibile grazie all'ombra, i pulsanti hanno un fondo scuro.
+            La sfumatura di iOS sotto la barra di stato la spegne la striscia #bordo-alto (vedi CSS). */}
+        <div style={{background:T.brand,position:"relative",overflow:"hidden"}}>
+          {fotoDelGiorno && <img src={fotoDelGiorno.dataUrl} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",...stileInquadratura(fotoDelGiorno.crop)}} />}
+          <div style={{position:"relative",paddingTop:"calc(14px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:14,minHeight:fotoDelGiorno?ALTEZZA_INTESTAZIONE:0,boxSizing:"border-box"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:fotoDelGiorno?OMBRA_TITOLO:"none"}}>Spendometro</div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <button onClick={()=>fb.signOut(fb.auth)} style={{background:fotoDelGiorno?"rgba(16,24,32,.62)":"#33547C",color:"#fff",border:"none",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600}}>{USERS[user]}</button>
+                <button onClick={manualRefresh} disabled={refreshing} aria-label="Aggiorna"
+                  style={{background:fotoDelGiorno?"rgba(16,24,32,.62)":"#33547C",border:"none",width:32,height:32,borderRadius:16,padding:0,display:"flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto"}}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+                    style={{display:"block",transition:"transform .6s linear",transform:refreshing?"rotate(360deg)":"rotate(0deg)"}}>
+                    <path d="M20 11a8 8 0 1 0-2.3 5.7"/>
+                    <path d="M20 5v6h-6"/>
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
-          {fotoDelGiorno && (
-            <div style={{position:"relative",overflow:"hidden",height:ALTEZZA_INTESTAZIONE}}>
-              <img src={fotoDelGiorno.dataUrl} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",...stileInquadratura(fotoDelGiorno.crop)}} />
-            </div>
-          )}
         </div>
 
         {locked ? <BackupLock onBackup={doBackup} config={config} /> : (
@@ -2424,7 +2432,7 @@ const CSVHEAD=["Data","Tipo","Importo","L2","L3","L4","L5","Etichetta","Nota","S
 
 /* ---------- editor di inquadratura della foto dell'intestazione ---------- */
 // Un dito trascina, due dita ingrandiscono, il cursore regola l'ingrandimento con precisione.
-// L'anteprima ha la stessa larghezza e altezza della striscia della foto, quindi quello che vedi e' quello che avrai.
+// L'anteprima ha la stessa larghezza e altezza dell'intestazione, quindi quello che vedi e' quello che avrai.
 function EditorInquadratura({foto,onSave,onClose}){
   const [c,setC]=useState(()=>({...INQ_BASE,...(foto.crop||{})}));
   const boxRef=useRef(null), imgRef=useRef(null);
@@ -2472,6 +2480,7 @@ function EditorInquadratura({foto,onSave,onClose}){
         style={{position:"relative",overflow:"hidden",width:larghezza,height:ALTEZZA_INTESTAZIONE,background:T.brand,touchAction:"none",cursor:"grab"}}>
         <img ref={imgRef} src={foto.dataUrl} alt="" draggable={false}
           style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",userSelect:"none",...stileInquadratura(c)}} />
+        <div style={{position:"absolute",top:14,left:16,color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:OMBRA_TITOLO,pointerEvents:"none"}}>Spendometro</div>
       </div>
       <div style={{width:larghezza,padding:"14px 16px 0",boxSizing:"border-box"}}>
         <div style={{display:"flex",alignItems:"center",gap:10,color:"#fff",fontSize:12.5}}>
