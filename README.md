@@ -4,7 +4,7 @@ App di famiglia per la gestione delle spese condivise, sviluppata per due person
 
 **In uso su:** `https://pierangelogobbo1986.github.io/Spendometro/`
 
-**Versione corrente:** 3.10.3
+**Versione corrente:** 3.11.0
 
 ---
 
@@ -19,7 +19,7 @@ Un ibrido fra Splitwise e Spendee: tiene traccia delle spese personali e condivi
 - **Cache**: `persistentLocalCache` con `persistentMultipleTabManager`, quindi l'app funziona offline e sincronizza al ritorno della rete.
 - **Export**: SheetJS (xlsx) via CDN per la generazione dei report in Excel, interamente lato client.
 - **Hosting**: GitHub Pages, servito direttamente dalla root del branch principale.
-- **PWA**: installabile su iPhone e Android da browser ("Aggiungi a Home"), con manifest e icone dedicate.
+- **PWA**: installabile su iPhone e Android da browser ("Aggiungi a Home"), con manifest e icone dedicate. Sulla Home la barra di stato resta sopra la pagina, opaca e del colore di `theme-color` (nessuno stile `black-translucent`): con quello stile iOS 26.1 e successivi disegnano una sfumatura scura sopra la parte alta dell'app. L'altezza della pagina segue quella reale della finestra (`--app-h`), perché `100vh` può includere la barra di stato.
 
 ## Funzionalità principali
 
@@ -47,6 +47,8 @@ Le tue azioni non notificano mai te stesso. Il meccanismo si appoggia a un regis
 **Foto dell'intestazione**
 
 Una galleria condivisa di massimo 10 foto, gestibile da entrambi gli utenti nella schermata Impostazioni/Dati. Ogni giorno l'intestazione mostra la "foto del giorno": l'indice si calcola dalla data (`Math.floor(giorni dall'epoca/864e5) % numero di foto`), quindi è identico per entrambi gli utenti senza bisogno di scrivere nulla in più su Firestore, e cambia da solo a mezzanotte. Ogni foto vive nel proprio documento della collection `header_photos`, perché un solo documento Firestore non basterebbe a contenerle tutte e dieci sotto il limite di 1 MB.
+
+Ogni foto ha la propria inquadratura, condivisa fra i due utenti: toccando una miniatura si apre un editor con un'anteprima grande quanto l'intestazione, dove si trascina con un dito, si ingrandisce con due dita o con il cursore (da 1× a 4×) e si salva. L'originale resta intatto: il documento salva solo il campo `crop` = `{x, y, z}`, cioè il punto da tenere a fuoco in percentuale e l'ingrandimento. Intestazione, miniature ed editor disegnano la foto con la stessa funzione (`stileInquadratura`: `object-fit: cover`, `object-position` e una scala attorno allo stesso punto), così l'anteprima coincide con il risultato. Le foto vengono salvate fino a 1600 pixel sul lato lungo, per lasciare margine all'ingrandimento.
 
 **Report**
 - Grafici a istogrammi scorrevoli per fisse/variabili/entrate, patrimoni, differenza entrate-uscite, selezionabili per mese o anno
@@ -84,7 +86,7 @@ Non ci sono altri file sorgente: tutto il codice, compresi gli stili e i compone
 | `recurring` | Regole di spesa ricorrente |
 | `esterni` | Persone esterne coinvolte in spese di gruppo |
 | `condivisioni` | Registro delle spese condivise con terzi: chi ha pagato, chi partecipava, quota a testa |
-| `header_photos` | Galleria di foto per l'intestazione (fino a 10), una per documento: "foto del giorno" |
+| `header_photos` | Galleria di foto per l'intestazione (fino a 10), una per documento: immagine (`dataUrl`) e inquadratura (`crop`) |
 | `meta/categories` | Tassonomia delle categorie a cinque livelli |
 | `meta/config` | Configurazione generale (backup, ecc.) |
 
@@ -111,6 +113,11 @@ Il codice vive in un solo file trasformato da Babel a runtime, quindi un errore 
 Per modificare `index.html` da script, la sostituzione di stringhe in Python con un `assert` prima di ogni `replace` è il metodo più affidabile: se il codice atteso non è più quello, lo script si ferma invece di corrompere il file in silenzio.
 
 ## Storico versioni
+
+**3.11.0**
+- Barra di stato sull'app installata: tolto lo stile `black-translucent`, con cui iOS 26.1 e successivi disegnano una banda sfumata sopra la parte alta dell'app che nessun codice della pagina può rimuovere. Ora la barra di stato è opaca, blu come l'intestazione, e la pagina parte sotto di essa. È la stessa soluzione adottata in Euteria. iOS legge questa impostazione solo quando l'app viene aggiunta alla Home: chi l'aveva installata prima deve eliminarla e aggiungerla di nuovo da Safari, e in quel caso la schermata Spese mostra un avviso. I dati restano su Firestore, quindi basta rifare l'accesso.
+- Editor di inquadratura per le foto dell'intestazione: trascinamento, zoom a due dita e cursore, salvataggio per foto e condiviso fra i due utenti, con ritorno all'originale in un tocco. Le miniature mostrano l'inquadratura scelta.
+- Foto salvate fino a 1600 pixel sul lato lungo, invece di 1000 di larghezza e 520 di altezza, per restare nitide quando si ingrandiscono. Le foto già caricate mantengono la risoluzione precedente.
 
 **3.10.3**
 - Revisione generale del codice, nessun cambiamento di comportamento. Il calcolo della "foto del giorno", prima duplicato fra intestazione e schermata Impostazioni, vive ora in un'unica funzione (`indiceFotoDelGiorno`), così le due parti non possono divergere. Resi espliciti con il prefisso `_` i campi scartati di proposito prima del salvataggio su Firestore. Il codice passa ora ESLint senza alcun avviso, comprese le regole sugli hook React e sulle `key` delle liste.

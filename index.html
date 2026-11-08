@@ -7,7 +7,10 @@
 <link rel="manifest" href="./manifest.json" />
 <meta name="theme-color" content="#1F3A5F" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<!-- Niente apple-mobile-web-app-status-bar-style "black-translucent": con quello stile iOS 26.1 e
+     successivi disegnano una sfumatura scura sopra la parte alta dell'app installata (la pagina
+     scorre sotto la barra di stato). Senza, la barra di stato e' opaca, del colore di theme-color
+     come l'intestazione, e la pagina parte sotto di essa. Stessa soluzione adottata in Euteria. -->
 <meta name="apple-mobile-web-app-title" content="Spendometro" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
 <style>
@@ -20,7 +23,8 @@
   .tkey{touch-action:manipulation;user-select:none;-webkit-user-select:none;}
   .tkey:active{filter:brightness(0.92);}
   input,select,textarea{font-size:16px;} /* evita lo zoom automatico su iOS */
-  #root{min-height:100vh;min-height:100dvh;}
+  /* --app-h: altezza reale della finestra (script qui sotto); 100vh puo' includere la barra di stato */
+  #root{min-height:var(--app-h,100dvh);}
   /* barra di navigazione: elemento a strato separato (translateZ) per evitare che iOS
      la agganci al contenitore sbagliato durante lo scroll. Il padding di sicurezza si
      applica UNA sola volta, qui, e non deve essere sommato altrove. */
@@ -30,6 +34,10 @@
   input[type="date"]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;display:block;}
   @media print{ .tabscroll{max-height:none!important;overflow:visible!important;} }
 </style>
+<script>
+  (function(){ function setH(){ document.documentElement.style.setProperty("--app-h", window.innerHeight+"px"); }
+    setH(); window.addEventListener("resize", setH); })();
+</script>
 
 <!-- Firebase caricato come modulo; l'app lo attende tramite window.fbReady -->
 <script>window.fbReady = new Promise(function (res, rej) { window.__fbOk = res; window.__fbErr = rej; });</script>
@@ -126,7 +134,7 @@ function debitiPerPersona(docs){
     .sort((a,b)=>ordine(a)-ordine(b)||a.localeCompare(b));
   return persone.map(p=>({nome:p,voci:risultati.filter(r=>r.da===p)})).filter(x=>x.voci.length>0);
 }
-const APP_VERSION = "3.10.3";
+const APP_VERSION = "3.11.0";
 const BACKUP_EMAIL_DEFAULT = ""; // impostato dall'app, non nel codice pubblico
 const other = (u) => (u === "pierangelo" ? "martina" : "pierangelo");
 
@@ -146,6 +154,25 @@ const today=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOff
 // un movimento appena inserito ma non ancora sincronizzato (pending) va comunque in cima, subito.
 // indice della "foto del giorno": dipende solo dalla data, quindi e' lo stesso per entrambi gli utenti
 const indiceFotoDelGiorno=(n)=> n ? Math.floor(new Date(today()+"T00:00:00").getTime()/864e5) % n : -1;
+// inquadratura di una foto dell'intestazione: x,y = punto da tenere a fuoco (0-100%), z = ingrandimento (>=1).
+// object-position sposta l'immagine come uno sfondo "cover"; la scala attorno allo stesso punto ingrandisce
+// tenendo fermo quel punto. Intestazione, miniature ed editor usano questa sola regola, cosi' coincidono.
+const INQ_BASE={x:50,y:50,z:1};
+const stileInquadratura=(c)=>{ const {x,y,z}={...INQ_BASE,...(c||{})};
+  return {objectFit:"cover",objectPosition:x+"% "+y+"%",transform:"scale("+z+")",transformOrigin:x+"% "+y+"%"}; };
+const ALTEZZA_INTESTAZIONE=128;
+
+// app sulla Home installata prima della 3.11.0: gira ancora sotto la barra di stato (vecchio stile
+// "black-translucent"), dove iOS 26.1+ disegna la sfumatura scura. iOS legge lo stile solo all'installazione.
+const sottoBarraDiStato=()=>{
+  const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
+  const standalone=window.navigator.standalone===true||window.matchMedia("(display-mode: standalone)").matches;
+  if(!ios||!standalone||!window.matchMedia("(orientation: portrait)").matches) return false;
+  const p=document.createElement("div");
+  p.style.cssText="position:fixed;top:0;left:0;visibility:hidden;padding-top:env(safe-area-inset-top)";
+  document.body.appendChild(p); const h=parseFloat(getComputedStyle(p).paddingTop)||0; p.remove();
+  return h>12;
+};
 const creatoMs=(t)=> t.createdAt && t.createdAt.toMillis ? t.createdAt.toMillis() : (t.pending ? Infinity : 0);
 const slug=(s)=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
 
@@ -481,10 +508,9 @@ function App(){
   const [photos,setPhotos]=useState([]);  // galleria condivisa, fino a 10 foto per l'intestazione
   // "foto del giorno": stesso indice per entrambi perche' calcolato dalla data, non da un sorteggio locale.
   // Cambia da solo a mezzanotte, nessuna scrittura extra su Firestore.
-  const fotoDelGiorno = photos.length
-    ? photos[indiceFotoDelGiorno(photos.length)].dataUrl
-    : null;
+  const fotoDelGiorno = photos.length ? photos[indiceFotoDelGiorno(photos.length)] : null;
   const [online,setOnline]=useState(navigator.onLine);
+  const [reinstalla]=useState(sottoBarraDiStato);   // calcolato una volta all'apertura
 
   const [view,setView]=useState("home");
   const [returnView,setReturnView]=useState("home");  // dove tornare dopo aver aperto una modifica
@@ -795,12 +821,12 @@ function App(){
 
   return (
     <Guard>
-    <div style={{background:T.bg,minHeight:"100dvh"}}>
+    <div style={{background:T.bg,minHeight:"var(--app-h,100dvh)"}}>
       <div style={{maxWidth:480,margin:"0 auto",paddingBottom:view==="add"?24:(locked?16:96)}}>
         <div style={{background:T.brand,position:"relative",overflow:"hidden"}}>
-          {fotoDelGiorno && <img src={fotoDelGiorno} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}} />}
+          {fotoDelGiorno && <img src={fotoDelGiorno.dataUrl} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",...stileInquadratura(fotoDelGiorno.crop)}} />}
           {fotoDelGiorno && <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(16,24,32,.40) 0%,rgba(16,24,32,.05) 45%,rgba(16,24,32,.45) 100%)"}} />}
-          <div style={{position:"relative",paddingTop:"calc(14px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:14,minHeight:fotoDelGiorno?128:0,display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+          <div style={{position:"relative",paddingTop:"calc(14px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:14,minHeight:fotoDelGiorno?ALTEZZA_INTESTAZIONE:0,display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
               <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:fotoDelGiorno?"0 1px 6px rgba(0,0,0,.5)":"none"}}>Spendometro</div>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -820,6 +846,13 @@ function App(){
 
         {locked ? <BackupLock onBackup={doBackup} config={config} /> : (
           <div style={{padding:"0 14px"}}>
+            {view==="home" && reinstalla && (
+              <Card style={{marginTop:12,background:T.warnSoft,borderColor:"#E8D9A8"}}>
+                <div style={{fontSize:13,lineHeight:1.5,color:"#5C4A16"}}>
+                  Per togliere la banda scura in alto: elimina Spendometro dalla Home e aggiungilo di nuovo da Safari (Condividi, poi Aggiungi alla schermata Home). iOS legge questa impostazione solo quando l'app viene aggiunta. I dati restano sul server: dovrai solo rifare l'accesso.
+                </div>
+              </Card>
+            )}
             {view==="home" && <Home {...{tx,user,meta,myBalance,fb,settlements,say,marcaLocale,setEditing,setEditingRecurring,setEditingCondivisione,setForceTerzi3,setView,setReturnView,etichette,cats,
               recurring,recurringBanner,dismissBanner,eventiBanner,dismissEventiBanner,eliminaMovimento,
               scale:homeScale,setScale:setHomeScale,selKey:homeSelKey,setSelKey:setHomeSelKey,
@@ -889,7 +922,7 @@ const IconGroup=()=><svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
 const NAV=[["home","Spese",IconCart],["terzi","Con terzi",IconGroup],["report","Report",IconChart],["cats","Categorie",IconTag],["data","Impostazioni",IconGear]];
 
 const Splash=({msg,action})=>(
-  <div style={{background:T.brand,minHeight:"100vh",display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",color:"#fff",paddingTop:"calc(24px + env(safe-area-inset-top))",paddingLeft:24,paddingRight:24,paddingBottom:24,boxSizing:"border-box"}}>
+  <div style={{background:T.brand,minHeight:"var(--app-h,100vh)",display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",color:"#fff",paddingTop:"calc(24px + env(safe-area-inset-top))",paddingLeft:24,paddingRight:24,paddingBottom:24,boxSizing:"border-box"}}>
     <div style={{fontSize:34,fontWeight:800,letterSpacing:-1.2}}>Spendometro</div>
     <div style={{color:"#9DB4CE",fontSize:14,marginTop:8}}>{msg}</div>
     {action && <div style={{marginTop:18,width:200}}><Btn kind="ghost" onClick={action}>Esci</Btn></div>}
@@ -907,7 +940,7 @@ function Login({fb}){
     setBusy(false);
   };
   return (
-    <div style={{background:T.brand,minHeight:"100vh",display:"flex",flexDirection:"column",justifyContent:"center",paddingTop:"calc(26px + env(safe-area-inset-top))",paddingLeft:26,paddingRight:26,paddingBottom:26,boxSizing:"border-box"}}>
+    <div style={{background:T.brand,minHeight:"var(--app-h,100vh)",display:"flex",flexDirection:"column",justifyContent:"center",paddingTop:"calc(26px + env(safe-area-inset-top))",paddingLeft:26,paddingRight:26,paddingBottom:26,boxSizing:"border-box"}}>
       <div style={{color:"#fff",fontSize:38,fontWeight:800,letterSpacing:-1.4}}>Spendometro</div>
       <div style={{color:"#9DB4CE",fontSize:14,marginBottom:28}}>Dipartimento contabile del PMAS</div>
       <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} type="email" autoComplete="username" style={{...sel2,marginBottom:9}} />
@@ -2400,6 +2433,75 @@ function CatsView({cats,saveCats,tx,say}){
 /* ---------- Dati ---------- */
 const CSVHEAD=["Data","Tipo","Importo","L2","L3","L4","L5","Etichetta","Nota","Split","Quota","InseritoDa"];
 
+/* ---------- editor di inquadratura della foto dell'intestazione ---------- */
+// Un dito trascina, due dita ingrandiscono, il cursore regola l'ingrandimento con precisione.
+// L'anteprima ha la stessa larghezza e altezza dell'intestazione, quindi quello che vedi e' quello che avrai.
+function EditorInquadratura({foto,onSave,onClose}){
+  const [c,setC]=useState(()=>({...INQ_BASE,...(foto.crop||{})}));
+  const boxRef=useRef(null), imgRef=useRef(null);
+  const ptr=useRef(new Map());            // dita/puntatori attivi: id -> {x,y}
+  const start=useRef(null);               // stato all'inizio del gesto
+  const cl=(v,a,b)=>Math.min(b,Math.max(a,v));
+  const larghezza=Math.min(window.innerWidth,480);
+
+  // quanto "sborda" l'immagine dal riquadro, in pixel, a un dato ingrandimento (0 = non si puo' spostare)
+  const sborda=(z)=>{
+    const box=boxRef.current, im=imgRef.current;
+    if(!box||!im||!im.naturalWidth) return {w:0,h:0};
+    const bw=box.clientWidth, bh=box.clientHeight;
+    const s=Math.max(bw/im.naturalWidth,bh/im.naturalHeight)*z;
+    return {w:im.naturalWidth*s-bw, h:im.naturalHeight*s-bh};
+  };
+  const dist=()=>{ const [a,b]=[...ptr.current.values()]; return Math.hypot(a.x-b.x,a.y-b.y); };
+  const inizia=()=>{ start.current={c:{...c},pts:new Map(ptr.current),d:ptr.current.size>1?dist():0}; };
+
+  const down=(e)=>{ e.currentTarget.setPointerCapture(e.pointerId);
+    ptr.current.set(e.pointerId,{x:e.clientX,y:e.clientY}); inizia(); };
+  const move=(e)=>{
+    if(!ptr.current.has(e.pointerId)||!start.current) return;
+    ptr.current.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    const st=start.current;
+    if(ptr.current.size>1 && st.d>0){
+      setC(v=>({...v,z:cl(st.c.z*dist()/st.d,1,4)}));
+    } else {
+      const p0=st.pts.get(e.pointerId); if(!p0) return;
+      const o=sborda(st.c.z);
+      // spostare la foto di dx pixel cambia il punto a fuoco di dx/sbordo; dito a destra = foto a destra
+      setC(v=>({...v,
+        x:o.w>0?cl(st.c.x-(e.clientX-p0.x)/o.w*100,0,100):v.x,
+        y:o.h>0?cl(st.c.y-(e.clientY-p0.y)/o.h*100,0,100):v.y}));
+    }
+  };
+  const up=(e)=>{ ptr.current.delete(e.pointerId); inizia(); };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(16,24,32,.92)",zIndex:96,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center"}}>
+      <div style={{color:"#fff",fontSize:13,marginBottom:10,padding:"0 16px",textAlign:"center",lineHeight:1.5}}>
+        Trascina con un dito per spostare, usa due dita o il cursore per ingrandire.
+      </div>
+      <div ref={boxRef} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
+        style={{position:"relative",overflow:"hidden",width:larghezza,height:ALTEZZA_INTESTAZIONE,background:T.brand,touchAction:"none",cursor:"grab"}}>
+        <img ref={imgRef} src={foto.dataUrl} alt="" draggable={false}
+          style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",userSelect:"none",...stileInquadratura(c)}} />
+        <div style={{position:"absolute",inset:0,pointerEvents:"none",background:"linear-gradient(180deg,rgba(16,24,32,.40) 0%,rgba(16,24,32,.05) 45%,rgba(16,24,32,.45) 100%)"}} />
+        <div style={{position:"absolute",top:14,left:16,color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:"0 1px 6px rgba(0,0,0,.5)",pointerEvents:"none"}}>Spendometro</div>
+      </div>
+      <div style={{width:larghezza,padding:"14px 16px 0",boxSizing:"border-box"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,color:"#fff",fontSize:12.5}}>
+          <span>Zoom</span>
+          <input type="range" min={1} max={4} step={0.01} value={c.z} onChange={e=>setC(v=>({...v,z:+e.target.value}))} style={{flex:1}} />
+          <span style={{width:38,textAlign:"right",fontVariantNumeric:"tabular-nums"}}>{c.z.toFixed(1)}×</span>
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:14}}>
+          <Btn kind="ghost" onClick={onClose}>Annulla</Btn>
+          <Btn kind="ghost" onClick={()=>setC({...INQ_BASE})}>Originale</Btn>
+          <Btn onClick={()=>onSave({x:Math.round(c.x*10)/10,y:Math.round(c.y*10)/10,z:Math.round(c.z*100)/100})}>Salva</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,attachTx}){
   const [imp,setImp]=useState(null);
   const [busy,setBusy]=useState(false);
@@ -2431,7 +2533,7 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
     rd.onload=()=>{
       const img=new Image();
       img.onload=()=>{
-        const MAXW=1000, MAXH=520;
+        const MAXW=1600, MAXH=1600;   // margine per ingrandire nell'editor di inquadratura senza sgranare
         let w=img.width,h=img.height;
         const sc=Math.min(MAXW/w,MAXH/h,1); w=Math.round(w*sc); h=Math.round(h*sc);
         const cv=document.createElement("canvas"); cv.width=w; cv.height=h;
@@ -2439,7 +2541,7 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
         let q=0.72,url=cv.toDataURL("image/jpeg",q);
         while(url.length>700000&&q>0.32){ q-=0.1; url=cv.toDataURL("image/jpeg",q); }
         if(url.length>900000) return say("Una foto era troppo pesante ed e' stata saltata, provane una piu piccola");
-        try{ fb.addDoc(fb.collection(fb.db,"header_photos"),{dataUrl:url,order:Date.now()+offset,updatedBy:user,updatedAt:fb.serverTimestamp()})
+        try{ fb.addDoc(fb.collection(fb.db,"header_photos"),{dataUrl:url,crop:INQ_BASE,order:Date.now()+offset,updatedBy:user,updatedAt:fb.serverTimestamp()})
             .catch(err=>say("Sincronizzazione foto non riuscita: "+(err.code||err.message))); }
         catch(err){ say("Errore: "+(err.code||err.message)); }
       };
@@ -2465,6 +2567,13 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
   };
   // stesso calcolo dell'intestazione: quale foto e' quella di "oggi", per evidenziarla in griglia
   const fotoOggiIdx = indiceFotoDelGiorno(photos.length);
+  const [inquadra,setInquadra]=useState(null);   // foto aperta nell'editor di inquadratura
+  const salvaInquadratura=(id,crop)=>{
+    try{ fb.updateDoc(fb.doc(fb.db,"header_photos",id),{crop,updatedBy:user,updatedAt:fb.serverTimestamp()})
+        .catch(e=>say("Non sincronizzato: "+(e.code||e.message)));
+      say("Inquadratura salvata per entrambi"); }catch(e){ say("Errore: "+(e.code||e.message)); }
+    setInquadra(null);
+  };
 
   const parseCSV=(text)=>{
     text=text.replace(/^\uFEFF/,"");
@@ -2667,14 +2776,17 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
       <H>Foto dell'intestazione</H>
       <Card>
         <div style={{fontSize:12.5,color:T.muted,lineHeight:1.5,marginBottom:9}}>
-          Fino a 10 foto, condivise fra te e {USERS[other(user)]}. Ogni giorno ne compare una diversa nell'intestazione, la stessa per entrambi: quella con il bordo è quella di oggi. Vengono ridimensionate automaticamente.
+          Fino a 10 foto, condivise fra te e {USERS[other(user)]}. Ogni giorno ne compare una diversa nell'intestazione, la stessa per entrambi: quella con il bordo è quella di oggi. Tocca una foto per spostarla e ingrandirla.
         </div>
         {photos.length>0 && (
           <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7,marginBottom:11}}>
             {photos.map((p,i)=>(
               <div key={p.id} style={{position:"relative"}}>
-                <img src={p.dataUrl} alt="" style={{width:"100%",height:70,objectFit:"cover",borderRadius:8,display:"block",
-                  outline:i===fotoOggiIdx?"2px solid "+T.brand:"none",outlineOffset:1}} />
+                <div onClick={()=>setInquadra(p)} role="button" aria-label="Inquadra foto"
+                  style={{height:70,borderRadius:8,overflow:"hidden",cursor:"pointer",
+                  outline:i===fotoOggiIdx?"2px solid "+T.brand:"none",outlineOffset:1}}>
+                  <img src={p.dataUrl} alt="" style={{width:"100%",height:"100%",display:"block",...stileInquadratura(p.crop)}} />
+                </div>
                 <button onClick={()=>onRemovePhoto(p.id)} aria-label="Rimuovi foto"
                   style={{position:"absolute",top:3,right:3,width:20,height:20,borderRadius:10,border:"none",
                   background:"rgba(16,24,32,.65)",color:"#fff",fontSize:12,lineHeight:1,padding:0}}>✕</button>
@@ -2686,6 +2798,7 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
           ? <input type="file" accept="image/*" multiple onChange={onPhoto} style={{fontSize:13}} />
           : <div style={{fontSize:12,color:T.muted}}>Hai raggiunto il massimo di 10 foto. Rimuovine una per aggiungerne un'altra.</div>}
       </Card>
+      {inquadra && <EditorInquadratura foto={inquadra} onSave={(c)=>salvaInquadratura(inquadra.id,c)} onClose={()=>setInquadra(null)} />}
 
     </div>
   );
