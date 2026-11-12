@@ -139,7 +139,7 @@ function debitiPerPersona(docs){
     .sort((a,b)=>ordine(a)-ordine(b)||a.localeCompare(b));
   return persone.map(p=>({nome:p,voci:risultati.filter(r=>r.da===p)})).filter(x=>x.voci.length>0);
 }
-const APP_VERSION = "3.12.0";
+const APP_VERSION = "3.12.1";
 const BACKUP_EMAIL_DEFAULT = ""; // impostato dall'app, non nel codice pubblico
 const other = (u) => (u === "pierangelo" ? "martina" : "pierangelo");
 
@@ -165,9 +165,18 @@ const indiceFotoDelGiorno=(n)=> n ? Math.floor(new Date(today()+"T00:00:00").get
 const INQ_BASE={x:50,y:50,z:1};
 const stileInquadratura=(c)=>{ const {x,y,z}={...INQ_BASE,...(c||{})};
   return {objectFit:"cover",objectPosition:x+"% "+y+"%",transform:"scale("+z+")",transformOrigin:x+"% "+y+"%"}; };
-const ALTEZZA_INTESTAZIONE=128;   // altezza della foto sotto la barra di stato
+const ALTEZZA_INTESTAZIONE=168;   // altezza della foto sotto la barra di stato
 // la foto parte dal bordo alto dello schermo: alla sua altezza si somma quella della barra di stato
 const ALTEZZA_FOTO_CSS="calc("+ALTEZZA_INTESTAZIONE+"px + env(safe-area-inset-top))";
+const SFUMATURA_IOS=40;           // quanto scende sotto l'orologio la sfumatura di iOS 26/27, in punti
+// altezza della barra di stato (env(safe-area-inset-top)), misurata con un elemento sonda
+const altezzaBarraDiStato=()=>{
+  const p=document.createElement("div");
+  p.style.cssText="position:fixed;top:0;left:0;visibility:hidden;padding-top:env(safe-area-inset-top)";
+  document.body.appendChild(p); const h=parseFloat(getComputedStyle(p).paddingTop)||0; p.remove(); return h;
+};
+// proporzioni della foto nell'intestazione (larghezza / altezza), per avere miniature con lo stesso taglio
+const proporzioniIntestazione=()=>Math.min(window.innerWidth,480)+" / "+(ALTEZZA_INTESTAZIONE+altezzaBarraDiStato());
 const OMBRA_TITOLO="0 1px 2px rgba(0,0,0,.45), 0 1px 10px rgba(0,0,0,.55)";   // nome leggibile sulla foto
 // leggera ombra solo in fondo alla foto, dietro a nome e pulsanti
 const OMBRA_BASSO={position:"absolute",left:0,right:0,bottom:0,height:72,pointerEvents:"none",
@@ -2433,7 +2442,7 @@ const CSVHEAD=["Data","Tipo","Importo","L2","L3","L4","L5","Etichetta","Nota","S
 /* ---------- editor di inquadratura della foto dell'intestazione ---------- */
 // Un dito trascina, due dita ingrandiscono, il cursore regola l'ingrandimento con precisione.
 // L'anteprima ha la stessa larghezza e altezza dell'intestazione, quindi quello che vedi e' quello che avrai.
-function EditorInquadratura({foto,onSave,onClose}){
+function EditorInquadratura({foto,nome,onSave,onClose}){
   const [c,setC]=useState(()=>({...INQ_BASE,...(foto.crop||{})}));
   const boxRef=useRef(null), imgRef=useRef(null);
   const ptr=useRef(new Map());            // dita/puntatori attivi: id -> {x,y}
@@ -2474,14 +2483,23 @@ function EditorInquadratura({foto,onSave,onClose}){
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(16,24,32,.92)",zIndex:96,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center"}}>
       <div style={{color:"#fff",fontSize:13,marginBottom:10,padding:"0 16px",textAlign:"center",lineHeight:1.5}}>
-        Trascina con un dito per spostare, usa due dita o il cursore per ingrandire.
+        Trascina con un dito per spostare, usa due dita o il cursore per ingrandire. In alto, la parte schiarita finisce sotto l'orologio e la sfumatura di iOS; in basso ci sono nome e pulsanti.
       </div>
       <div ref={boxRef} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
         style={{position:"relative",overflow:"hidden",width:larghezza,height:ALTEZZA_FOTO_CSS,background:T.brand,touchAction:"none",cursor:"grab"}}>
         <img ref={imgRef} src={foto.dataUrl} alt="" draggable={false}
           style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",userSelect:"none",...stileInquadratura(c)}} />
+        {/* indicativa: riproduce a grandi linee la sfumatura che iOS stende sotto l'orologio */}
+        <div style={{position:"absolute",top:0,left:0,right:0,height:"calc(env(safe-area-inset-top) + "+SFUMATURA_IOS+"px)",pointerEvents:"none",
+          background:"linear-gradient(180deg,rgba(237,240,243,.72) 0%,rgba(237,240,243,.4) 60%,rgba(237,240,243,0) 100%)"}} />
         <div style={OMBRA_BASSO} />
-        <div style={{position:"absolute",bottom:16,left:16,color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:OMBRA_TITOLO,pointerEvents:"none"}}>Spendometro</div>
+        <div style={{position:"absolute",left:16,right:16,bottom:12,display:"flex",justifyContent:"space-between",alignItems:"center",pointerEvents:"none"}}>
+          <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:OMBRA_TITOLO}}>Spendometro</div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{background:"rgba(16,24,32,.62)",color:"#fff",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600}}>{nome}</div>
+            <div style={{background:"rgba(16,24,32,.62)",width:32,height:32,borderRadius:16}} />
+          </div>
+        </div>
       </div>
       <div style={{width:larghezza,padding:"14px 16px 0",boxSizing:"border-box"}}>
         <div style={{display:"flex",alignItems:"center",gap:10,color:"#fff",fontSize:12.5}}>
@@ -2564,6 +2582,7 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
   };
   // stesso calcolo dell'intestazione: quale foto e' quella di "oggi", per evidenziarla in griglia
   const fotoOggiIdx = indiceFotoDelGiorno(photos.length);
+  const [proporzioniFoto]=useState(proporzioniIntestazione);   // le miniature mostrano lo stesso taglio dell'intestazione
   const [inquadra,setInquadra]=useState(null);   // foto aperta nell'editor di inquadratura
   const salvaInquadratura=(id,crop)=>{
     try{ fb.updateDoc(fb.doc(fb.db,"header_photos",id),{crop,updatedBy:user,updatedAt:fb.serverTimestamp()})
@@ -2780,7 +2799,7 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
             {photos.map((p,i)=>(
               <div key={p.id} style={{position:"relative"}}>
                 <div onClick={()=>setInquadra(p)} role="button" aria-label="Inquadra foto"
-                  style={{height:70,borderRadius:8,overflow:"hidden",cursor:"pointer",
+                  style={{aspectRatio:proporzioniFoto,borderRadius:8,overflow:"hidden",cursor:"pointer",
                   outline:i===fotoOggiIdx?"2px solid "+T.brand:"none",outlineOffset:1}}>
                   <img src={p.dataUrl} alt="" style={{width:"100%",height:"100%",display:"block",...stileInquadratura(p.crop)}} />
                 </div>
@@ -2795,7 +2814,7 @@ function SchermataDati({tx,meta,user,fb,doBackup,config,photos,say,detachTx,atta
           ? <input type="file" accept="image/*" multiple onChange={onPhoto} style={{fontSize:13}} />
           : <div style={{fontSize:12,color:T.muted}}>Hai raggiunto il massimo di 10 foto. Rimuovine una per aggiungerne un'altra.</div>}
       </Card>
-      {inquadra && <EditorInquadratura foto={inquadra} onSave={(c)=>salvaInquadratura(inquadra.id,c)} onClose={()=>setInquadra(null)} />}
+      {inquadra && <EditorInquadratura foto={inquadra} nome={USERS[user]} onSave={(c)=>salvaInquadratura(inquadra.id,c)} onClose={()=>setInquadra(null)} />}
 
     </div>
   );

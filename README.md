@@ -4,7 +4,7 @@ App di famiglia per la gestione delle spese condivise, sviluppata per due person
 
 **In uso su:** `https://pierangelogobbo1986.github.io/Spendometro/`
 
-**Versione corrente:** 3.12.0
+**Versione corrente:** 3.12.1
 
 ---
 
@@ -48,7 +48,7 @@ Le tue azioni non notificano mai te stesso. Il meccanismo si appoggia a un regis
 
 Una galleria condivisa di massimo 10 foto, gestibile da entrambi gli utenti nella schermata Impostazioni/Dati. Ogni giorno l'intestazione mostra la "foto del giorno": l'indice si calcola dalla data (`Math.floor(giorni dall'epoca/864e5) % numero di foto`), quindi è identico per entrambi gli utenti senza bisogno di scrivere nulla in più su Firestore, e cambia da solo a mezzanotte. Ogni foto vive nel proprio documento della collection `header_photos`, perché un solo documento Firestore non basterebbe a contenerle tutte e dieci sotto il limite di 1 MB.
 
-Ogni foto ha la propria inquadratura, condivisa fra i due utenti: toccando una miniatura si apre un editor con un'anteprima grande quanto l'intestazione (128 px più l'altezza della barra di stato), dove si trascina con un dito, si ingrandisce con due dita o con il cursore (da 1× a 4×) e si salva. L'originale resta intatto: il documento salva solo il campo `crop` = `{x, y, z}`, cioè il punto da tenere a fuoco in percentuale e l'ingrandimento. Intestazione, miniature ed editor disegnano la foto con la stessa funzione (`stileInquadratura`: `object-fit: cover`, `object-position` e una scala attorno allo stesso punto), così l'anteprima coincide con il risultato. Le foto vengono salvate fino a 1600 pixel sul lato lungo, per lasciare margine all'ingrandimento. Nell'intestazione la foto va dal bordo alto dello schermo a 128 px sotto la barra di stato (`ALTEZZA_FOTO_CSS`); nome, utente e pulsante Aggiorna stanno sul bordo inferiore, con una leggera ombra solo in fondo alla foto (`OMBRA_BASSO`) per restare leggibili.
+Ogni foto ha la propria inquadratura, condivisa fra i due utenti: toccando una miniatura si apre un editor con un'anteprima grande quanto l'intestazione (168 px più l'altezza della barra di stato), con le zone coperte in evidenza: in alto, schiarita, la parte che finisce sotto l'orologio e la sfumatura di iOS (barra di stato più circa 40 punti, `SFUMATURA_IOS`); in basso la riga con nome, utente e pulsante Aggiorna, dove si trascina con un dito, si ingrandisce con due dita o con il cursore (da 1× a 4×) e si salva. L'originale resta intatto: il documento salva solo il campo `crop` = `{x, y, z}`, cioè il punto da tenere a fuoco in percentuale e l'ingrandimento. Intestazione, miniature ed editor disegnano la foto con la stessa funzione (`stileInquadratura`: `object-fit: cover`, `object-position` e una scala attorno allo stesso punto), così l'anteprima coincide con il risultato. Le foto vengono salvate fino a 1600 pixel sul lato lungo, per lasciare margine all'ingrandimento. Nell'intestazione la foto va dal bordo alto dello schermo a 168 px sotto la barra di stato (`ALTEZZA_INTESTAZIONE`, `ALTEZZA_FOTO_CSS`); le miniature in Impostazioni hanno le stesse proporzioni dell'intestazione (`proporzioniIntestazione`, che misura la barra di stato), quindi mostrano lo stesso taglio. L'inquadratura salvata non dipende dalle dimensioni del riquadro: cambiando l'altezza dell'intestazione resta valida e il punto a fuoco rimane lo stesso, si allarga solo la porzione visibile; nome, utente e pulsante Aggiorna stanno sul bordo inferiore, con una leggera ombra solo in fondo alla foto (`OMBRA_BASSO`) per restare leggibili.
 
 **Report**
 - Grafici a istogrammi scorrevoli per fisse/variabili/entrate, patrimoni, differenza entrate-uscite, selezionabili per mese o anno
@@ -113,6 +113,11 @@ Il codice vive in un solo file trasformato da Babel a runtime, quindi un errore 
 Per modificare `index.html` da script, la sostituzione di stringhe in Python con un `assert` prima di ogni `replace` è il metodo più affidabile: se il codice atteso non è più quello, lo script si ferma invece di corrompere il file in silenzio.
 
 ## Storico versioni
+
+**3.12.1**
+- Foto dell'intestazione più alta: 168 px sotto la barra di stato invece di 128.
+- Miniature in Impostazioni con le stesse proporzioni dell'intestazione, invece di un'altezza fissa di 70 px: mostrano lo stesso taglio che si vede in alto.
+- Editor di inquadratura: anteprima alla nuova altezza, con la parte alta schiarita dove finisce sotto l'orologio e la sfumatura di iOS, e in basso la riga di nome, utente e pulsante Aggiorna, così si possono tenere i volti nella fascia libera. Il metodo di inquadratura (punto a fuoco in percentuale e ingrandimento) non dipende dalle dimensioni e non è cambiato.
 
 **3.12.0**
 - Intestazione come in Kcalario: la pagina torna a passare sotto la barra di stato (`black-translucent`) e la foto del giorno parte dal bordo alto dello schermo, dietro l'orologio, finendo dove finiva prima. La sfumatura che iOS 26/27 stende sotto l'orologio resta, ma tocca solo la foto: nome, utente e pulsante Aggiorna sono scesi sul bordo inferiore, con una leggera ombra dietro. Nelle versioni 3.10 e precedenti la sfumatura dava fastidio proprio perché copriva le scritte, che stavano subito sotto l'orologio.
