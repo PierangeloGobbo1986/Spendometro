@@ -7,17 +7,19 @@
 <link rel="manifest" href="./manifest.json" />
 <meta name="theme-color" content="#1F3A5F" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
-<!-- Niente apple-mobile-web-app-status-bar-style "black-translucent": con quello stile iOS 26.1 e
-     successivi disegnano una sfumatura scura sopra la parte alta dell'app installata (la pagina
-     scorre sotto la barra di stato). Senza, la barra di stato e' opaca, del colore di theme-color
-     come l'intestazione, e la pagina parte sotto di essa. Stessa soluzione adottata in Euteria. -->
+<!-- "black-translucent", come in Kcalario: la pagina passa sotto la barra di stato e la foto del giorno
+     parte dal bordo alto dello schermo. Su iOS 26 e 27 sotto l'orologio iOS stende una sfumatura di circa
+     40 pt, del colore di sfondo della pagina, che nessun codice spegne: per questo nome e pulsanti stanno
+     sul bordo inferiore della foto. iOS legge questo stile solo quando l'app viene aggiunta alla Home.
+     L'alternativa (barra opaca piu' striscia fissa #bordo-alto, versione 3.11.3) toglie la sfumatura ma
+     lascia una fascia a tinta unita al posto della foto. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Spendometro" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
 <style>
-  /* Sfondo della pagina = blu dell'intestazione: iOS 26 ignora theme-color e colora la barra di stato
-     con lo sfondo di body. Con il grigio delle schermate la barra veniva bianca. Il grigio resta
-     sul contenitore dell'app, che copre tutta l'altezza della finestra. */
-  html,body{margin:0;padding:0;background:#1F3A5F;-webkit-text-size-adjust:100%;}
+  /* Sfondo della pagina: e' il colore con cui iOS 26/27 tinge la sfumatura sotto l'orologio. Grigio chiaro
+     come le schermate, cosi' sulla foto resta una velatura chiara, come il crema di Kcalario. */
+  html,body{margin:0;padding:0;background:#EDF0F3;-webkit-text-size-adjust:100%;}
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#101820;overscroll-behavior-y:contain;}
   *{-webkit-tap-highlight-color:transparent;}
   input,select,textarea,button{font-family:inherit;}
@@ -33,15 +35,6 @@
      applica UNA sola volta, qui, e non deve essere sommato altrove. */
   #barra{position:fixed;bottom:0;left:0;right:0;z-index:60;transform:translateZ(0);
     padding-bottom:env(safe-area-inset-bottom);box-sizing:border-box;}
-  /* Bordo alto per Safari (iOS 26 e successivi). Sotto la barra di stato Safari disegna una sfumatura,
-     a meno che 4 px sotto il bordo alto, al centro, trovi un elemento position:fixed o sticky largo
-     almeno il 90% della finestra, alto piu' di 10 px e con un colore di sfondo: in quel caso colora
-     la barra di stato con quel colore e la sfumatura sparisce (WebKit, LocalFrameView::fixedContainerEdges).
-     Un colore semitrasparente viene fuso con lo sfondo della pagina (il blu di body), quindi la barra
-     di stato resta blu pieno mentre la striscia, al 4%, non si vede sopra la foto. Basta un colore non nullo:
-     la soglia del 10% di WebKit riguarda la proprieta' opacity dell'elemento (lasciata a 1), non lo sfondo.
-     In Euteria fa lo stesso lavoro la barra in alto, che e' sticky e opaca. */
-  #bordo-alto{position:fixed;top:0;left:0;right:0;height:12px;background:rgba(31,58,95,.04);z-index:65;pointer-events:none;}
   /* il campo data su iOS non si restringe da solo */
   input[type="date"]{-webkit-appearance:none;appearance:none;min-width:0;max-width:100%;display:block;}
   @media print{ .tabscroll{max-height:none!important;overflow:visible!important;} }
@@ -99,7 +92,6 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
-<div id="bordo-alto" aria-hidden="true"></div>
 <div id="root"></div>
 
 <script type="text/babel" data-presets="react">
@@ -147,7 +139,7 @@ function debitiPerPersona(docs){
     .sort((a,b)=>ordine(a)-ordine(b)||a.localeCompare(b));
   return persone.map(p=>({nome:p,voci:risultati.filter(r=>r.da===p)})).filter(x=>x.voci.length>0);
 }
-const APP_VERSION = "3.11.3";
+const APP_VERSION = "3.12.0";
 const BACKUP_EMAIL_DEFAULT = ""; // impostato dall'app, non nel codice pubblico
 const other = (u) => (u === "pierangelo" ? "martina" : "pierangelo");
 
@@ -173,8 +165,13 @@ const indiceFotoDelGiorno=(n)=> n ? Math.floor(new Date(today()+"T00:00:00").get
 const INQ_BASE={x:50,y:50,z:1};
 const stileInquadratura=(c)=>{ const {x,y,z}={...INQ_BASE,...(c||{})};
   return {objectFit:"cover",objectPosition:x+"% "+y+"%",transform:"scale("+z+")",transformOrigin:x+"% "+y+"%"}; };
-const ALTEZZA_INTESTAZIONE=128;
-const OMBRA_TITOLO="0 1px 2px rgba(0,0,0,.45), 0 1px 10px rgba(0,0,0,.55)";   // nome leggibile sulla foto senza velature
+const ALTEZZA_INTESTAZIONE=128;   // altezza della foto sotto la barra di stato
+// la foto parte dal bordo alto dello schermo: alla sua altezza si somma quella della barra di stato
+const ALTEZZA_FOTO_CSS="calc("+ALTEZZA_INTESTAZIONE+"px + env(safe-area-inset-top))";
+const OMBRA_TITOLO="0 1px 2px rgba(0,0,0,.45), 0 1px 10px rgba(0,0,0,.55)";   // nome leggibile sulla foto
+// leggera ombra solo in fondo alla foto, dietro a nome e pulsanti
+const OMBRA_BASSO={position:"absolute",left:0,right:0,bottom:0,height:72,pointerEvents:"none",
+  background:"linear-gradient(180deg,rgba(16,24,32,0) 0%,rgba(16,24,32,.32) 100%)"};
 
 const creatoMs=(t)=> t.createdAt && t.createdAt.toMillis ? t.createdAt.toMillis() : (t.pending ? Infinity : 0);
 const slug=(s)=>s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
@@ -825,13 +822,16 @@ function App(){
     <Guard>
     <div style={{background:T.bg,minHeight:"var(--app-h,100dvh)"}}>
       <div style={{maxWidth:480,margin:"0 auto",paddingBottom:view==="add"?24:(locked?16:96)}}>
-        {/* Intestazione: la foto del giorno parte dal bordo alto della pagina, con nome e pulsanti sopra.
-            Nessuna velatura scura: il nome resta leggibile grazie all'ombra, i pulsanti hanno un fondo scuro.
-            La sfumatura di iOS sotto la barra di stato la spegne la striscia #bordo-alto (vedi CSS). */}
+        {/* Intestazione come in Kcalario: la foto del giorno parte dal bordo alto dello schermo, dietro
+            l'orologio, e finisce ALTEZZA_INTESTAZIONE px sotto la barra di stato. Nome e pulsanti stanno sul
+            bordo inferiore della foto, fuori dalla sfumatura che iOS stende sotto l'orologio; una leggera
+            ombra in basso li tiene leggibili anche su una foto chiara. */}
         <div style={{background:T.brand,position:"relative",overflow:"hidden"}}>
           {fotoDelGiorno && <img src={fotoDelGiorno.dataUrl} alt="" style={{position:"absolute",inset:0,width:"100%",height:"100%",...stileInquadratura(fotoDelGiorno.crop)}} />}
-          <div style={{position:"relative",paddingTop:"calc(14px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:14,minHeight:fotoDelGiorno?ALTEZZA_INTESTAZIONE:0,boxSizing:"border-box"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          {fotoDelGiorno && <div style={OMBRA_BASSO} />}
+          <div style={{position:"relative",paddingTop:"calc(14px + env(safe-area-inset-top))",paddingLeft:16,paddingRight:16,paddingBottom:12,
+            minHeight:fotoDelGiorno?ALTEZZA_FOTO_CSS:0,boxSizing:"border-box",display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div style={{color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:fotoDelGiorno?OMBRA_TITOLO:"none"}}>Spendometro</div>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <button onClick={()=>fb.signOut(fb.auth)} style={{background:fotoDelGiorno?"rgba(16,24,32,.62)":"#33547C",color:"#fff",border:"none",padding:"6px 12px",borderRadius:20,fontSize:13,fontWeight:600}}>{USERS[user]}</button>
@@ -2477,10 +2477,11 @@ function EditorInquadratura({foto,onSave,onClose}){
         Trascina con un dito per spostare, usa due dita o il cursore per ingrandire.
       </div>
       <div ref={boxRef} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
-        style={{position:"relative",overflow:"hidden",width:larghezza,height:ALTEZZA_INTESTAZIONE,background:T.brand,touchAction:"none",cursor:"grab"}}>
+        style={{position:"relative",overflow:"hidden",width:larghezza,height:ALTEZZA_FOTO_CSS,background:T.brand,touchAction:"none",cursor:"grab"}}>
         <img ref={imgRef} src={foto.dataUrl} alt="" draggable={false}
           style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",userSelect:"none",...stileInquadratura(c)}} />
-        <div style={{position:"absolute",top:14,left:16,color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:OMBRA_TITOLO,pointerEvents:"none"}}>Spendometro</div>
+        <div style={OMBRA_BASSO} />
+        <div style={{position:"absolute",bottom:16,left:16,color:"#fff",fontSize:19,fontWeight:800,letterSpacing:-0.5,textShadow:OMBRA_TITOLO,pointerEvents:"none"}}>Spendometro</div>
       </div>
       <div style={{width:larghezza,padding:"14px 16px 0",boxSizing:"border-box"}}>
         <div style={{display:"flex",alignItems:"center",gap:10,color:"#fff",fontSize:12.5}}>
